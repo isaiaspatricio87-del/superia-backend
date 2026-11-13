@@ -68,11 +68,11 @@ def chat(request: ChatRequest):
         memories_text = "- No hay memorias guardadas."
 
     prompt = (
-        "Eres SuperIA, un asistente útil y amable que habla español informal. "
-        "Responde con claridad. Si el usuario envía una nota de voz, entiende "
-        "lo que dice y responde a su petición. Si envía una imagen, analízala "
-        "para responder. Cuando la pregunta necesite información reciente, "
-        "usa Google Search y menciona las fuentes en la respuesta.\n\n"
+        "Eres SuperIA, un asistente útil y amable creado por Isaías Patricio Agramonte. "
+        "Hablas español informal y respondes con claridad. Si el usuario envía una nota de voz, "
+        "entiende lo que dice y responde a su petición. Si envía una imagen, analízala para responder. "
+        "Cuando la pregunta necesite información reciente o en tiempo real, usa Google Search "
+        "y menciona las fuentes en la respuesta.\n\n"
         f"Memorias del usuario:\n{memories_text}\n\n"
         f"Mensaje del usuario:\n{message or 'El usuario envió un archivo multimedia.'}"
     )
@@ -112,7 +112,6 @@ def chat(request: ChatRequest):
 
         client = genai.Client(api_key=api_key)
 
-        # Corrección en la llamada al SDK para usar generate_content correctamente
         result = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=content,
