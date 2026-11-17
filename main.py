@@ -112,14 +112,14 @@ def chat(request: ChatRequest):
 
         client = genai.Client(api_key=api_key)
 
-        # Actualizado al modelo gemini-3.8-flash requerido por la API
+        # Actualizado al modelo gemini-3.6-flash requerido por la API
         result = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=content,
-            config={
-                "tools": [{"google_search": {}}],
-            },
-        )
+        model="gemini-3.6-flash",
+        contents=content,
+        config={
+            "tools": [{"google_search": {}}],
+        },
+    )
 
         answer = result.text or "No recibí una respuesta de Gemini."
         return {"reply": answer}
