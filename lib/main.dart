@@ -4,20 +4,17 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'services/api_service.dart';
 
 const Color bg = Color(0xFF05091B);
 const Color panel = Color(0xE608122B);
 const Color cyan = Color(0xFF19C7FF);
 const Color blue = Color(0xFF3475FF);
 const Color muted = Color(0xFFAAC0E0);
-
-// Conexión fija al backend Render; no aparece en Ajustes.
-const String backendChatUrl =
-    'https://superia-backend-1.onrender.com/api/chat';
 
 void main() => runApp(const SuperIAApp());
 
@@ -279,9 +276,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       case '/hora':
         final now = DateTime.now();
         final time = TimeOfDay.fromDateTime(now).format(context);
-        final date =
-            MaterialLocalizations.of(context).formatMediumDate(now);
-        return 'Ahora son las \(time del \)date.';
+        final date = MaterialLocalizations.of(context).formatMediumDate(now);
+        return 'Ahora son las $time del $date.';
 
       case '/recordar':
         if (argument.isEmpty) {
@@ -310,54 +306,20 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
-  Future<Map<String, dynamic>> _askBackend({
+  // LLAMADA AL NUEVO SERVICIO ORGANIZADO EN CARPETA SERVICES
+  Future<String> _askBackend({
     String message = '',
     Uint8List? audioWav,
     Uint8List? image,
     String? imageMimeType,
   }) async {
-    final Map<String, dynamic> payload = {
-      'message': message,
-      'memories': _memories,
-    };
-
-    if (audioWav != null) {
-      payload['audio_base64'] = base64Encode(audioWav);
-      payload['audio_mime_type'] = 'audio/wav';
-    }
-
-    if (image != null) {
-      payload['image_base64'] = base64Encode(image);
-      payload['image_mime_type'] = imageMimeType ?? 'image/jpeg';
-    }
-
-    final response = await http
-        .post(
-          Uri.parse(backendChatUrl),
-          headers: const {'Content-Type': 'application/json'},
-          body: jsonEncode(payload),
-        )
-        .timeout(const Duration(seconds: 90));
-
-    dynamic body;
-    try {
-      body = jsonDecode(response.body);
-    } catch (_) {
-      body = null;
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final detail = body is Map ? body['detail'] : null;
-      throw Exception(
-        detail?.toString() ?? 'Error HTTP ${response.statusCode}',
-      );
-    }
-
-    if (body is! Map) {
-      throw Exception('El servidor devolvió una respuesta inválida.');
-    }
-
-    return Map<String, dynamic>.from(body);
+    return await ApiService.sendMessage(
+      message: message,
+      memories: _memories,
+      audioWav: audioWav,
+      image: image,
+      imageMimeType: imageMimeType,
+    );
   }
 
   Future<void> _sendText() async {
@@ -392,12 +354,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       if (commandReply != null) {
         reply = commandReply;
       } else {
-        final result = await _askBackend(
+        reply = await _askBackend(
           message: text,
           image: image,
           imageMimeType: imageMime,
         );
-        reply = (result['reply'] ?? 'No recibí una respuesta.').toString();
       }
 
       await _addMessage(false, reply);
@@ -405,7 +366,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     } catch (error) {
       await _addMessage(
         false,
-        'No pude conectar con Render: ${_friendlyError(error)}',
+        'Error: ${_friendlyError(error)}',
       );
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -414,12 +375,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   String _friendlyError(Object error) {
     final text = error.toString().replaceFirst('Exception: ', '');
-
-    if (text.contains('Failed to fetch') ||
-        text.contains('XMLHttpRequest')) {
-      return 'falló la conexión. Revisa el backend y CORS en Render.';
+    if (text.contains('Failed to fetch') || text.contains('XMLHttpRequest')) {
+      return 'Falló la conexión con Render. Revisa el backend.';
     }
-
     return text;
   }
 
@@ -526,14 +484,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       _recordedPcmChunks.clear();
 
       if (pcm.isEmpty) {
-        _toast('No se grabó audio. Mantén presionado un momento.');
+        _toast('No se grabó audio.');
         return;
       }
 
-      await _sendVoice(
-        _makeWav(pcm),
-        seconds < 1 ? 1 : seconds,
-      );
+      await _sendVoice(_makeWav(pcm), seconds < 1 ? 1 : seconds);
     } catch (error) {
       _toast('No pude preparar la nota de voz: ${_friendlyError(error)}');
     }
@@ -605,8 +560,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         voiceDurationSeconds: seconds,
       );
 
-      final result = await _askBackend(audioWav: wav);
-      final reply = (result['reply'] ?? 'No recibí una respuesta.').toString();
+      final reply = await _askBackend(audioWav: wav);
 
       await _addMessage(false, reply);
       if (_speakReplies) await _speak(reply);
@@ -646,11 +600,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
     await _save();
     _toast('Nota guardada.');
-  }
-
-  Future<void> _deleteMemory(int index) async {
-    setState(() => _memories.removeAt(index));
-    await _save();
   }
 
   Future<void> _saveSettings() async {
@@ -1279,7 +1228,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '\({command.icon}  \){command.title}',
+                        '${command.icon}  ${command.title}',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
