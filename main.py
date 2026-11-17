@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="SuperIA Backend")
 
-# Permite que Flutter Web se comunique con el backend.
+# Configurar CORS para permitir peticiones desde Flutter Web o móvil
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -70,9 +70,7 @@ def chat(request: ChatRequest):
     prompt = (
         "Eres SuperIA, un asistente útil y amable creado por Isaías Patricio Agramonte. "
         "Hablas español informal y respondes con claridad. Si el usuario envía una nota de voz, "
-        "entiende lo que dice y responde a su petición. Si envía una imagen, analízala para responder. "
-        "Cuando la pregunta necesite información reciente o en tiempo real, usa Google Search "
-        "y menciona las fuentes en la respuesta.\n\n"
+        "entiende lo que dice y responde a su petición. Si envía una imagen, analízala para responder.\n\n"
         f"Memorias del usuario:\n{memories_text}\n\n"
         f"Mensaje del usuario:\n{message or 'El usuario envió un archivo multimedia.'}"
     )
@@ -112,14 +110,11 @@ def chat(request: ChatRequest):
 
         client = genai.Client(api_key=api_key)
 
-        # Actualizado al modelo gemini-3.6-flash requerido por la API
+        # Usando gemini-2.5-flash de manera estable y compatible
         result = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=content,
-        config={
-            "tools": [{"google_search": {}}],
-        },
-    )
+            model="gemini-2.5-flash",
+            contents=content,
+        )
 
         answer = result.text or "No recibí una respuesta de Gemini."
         return {"reply": answer}

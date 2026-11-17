@@ -306,7 +306,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
-  // LLAMADA AL NUEVO SERVICIO ORGANIZADO EN CARPETA SERVICES
   Future<String> _askBackend({
     String message = '',
     Uint8List? audioWav,
@@ -616,7 +615,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   Future<void> _clearChat() async {
     setState(() => _messages.clear());
     await _save();
-    _toast('Chat nuevo. La memoria se conservó.');
+    _toast('Nuevo chat iniciado.');
   }
 
   Future<void> _eraseAll() async {
@@ -763,6 +762,37 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             const SizedBox(height: 20),
             _statusPill(),
             const SizedBox(height: 18),
+            
+            // Botón directo de Nuevo Chat en el menú lateral
+            Padding(
+              padding: const EdgeInsets.only(bottom: 7),
+              child: Material(
+                color: const Color(0xFF10366F).withOpacity(0.6),
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  onTap: () {
+                    _setPage(0);
+                    _clearChat();
+                  },
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: cyan.withOpacity(.5)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.add_comment_outlined, color: cyan, size: 21),
+                        SizedBox(width: 12),
+                        Text('Nuevo chat', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
             for (var i = 0; i < _navLabels.length; i++)
               _navButton(i, expanded: true),
             const Spacer(),
@@ -890,7 +920,10 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             ),
             IconButton(
               tooltip: 'Nuevo chat',
-              onPressed: _clearChat,
+              onPressed: () {
+                _setPage(0);
+                _clearChat();
+              },
               icon: const Icon(
                 Icons.add_comment_outlined,
                 color: Colors.white,
