@@ -112,8 +112,9 @@ def chat(request: ChatRequest):
 
         client = genai.Client(api_key=api_key)
 
+        # Actualizado al modelo gemini-3.8-flash requerido por la API
         result = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=content,
             config={
                 "tools": [{"google_search": {}}],
