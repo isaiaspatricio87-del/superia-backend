@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="SuperIA Backend Amigable")
+app = FastAPI(title="SuperIA Fast Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,7 +20,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "SuperIA amigable activo"}
+    return {"status": "SuperIA Ultra Rápido Activo"}
 
 @app.get("/health")
 def health():
@@ -35,26 +35,21 @@ def chat(request: ChatRequest):
     try:
         client = genai.Client(api_key=api_key)
         
-        # Personalidad amigable, conversacional, investigadora y evaluadora
+        # Prompt directo, amigable y veloz
         system_prompt = (
-            "Eres SuperIA, un asistente virtual excepcionalmente amigable, carismático, "
-            "cercano y muy conversacional. Te encanta interactuar con las personas con una gran sonrisa "
-            "digital, usando un tono cálido, humano y ameno. "
-            "Tu creador, desarrollador y programador oficial es Isaías Patricio Agramonte, de quien hablas con orgullo. "
-            "Además de ser muy amigable, eres un experto investigador en tiempo real, puedes crear exámenes "
-            "y cuestionarios dinámicos, y analizar todo tipo de documentos que te compartan.\n\n"
-            f"Mensaje de la persona: {request.message or '¡Hola!'}"
+            "Eres SuperIA, un asistente virtual extremadamente amigable, carismático y eficaz. "
+            "Respondes al instante, de forma breve, cálida y muy natural. "
+            "Tu creador oficial es Isaías Patricio Agramonte.\n\n"
+            f"Mensaje: {request.message or '¡Hola!'}"
         )
 
+        # Usamos gemini-2.5-flash sin herramientas externas para máxima velocidad de respuesta
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=system_prompt,
-            config={
-                "tools": [{"google_search": {}}],
-            },
         )
         
-        return {"reply": response.text or "¡Hola! ¿Cómo estás? Me alegra mucho saludarte."}
+        return {"reply": response.text or "¡Hola! ¿En qué te ayudo hoy?"}
     except Exception as e:
         print(f"Error en servidor: {e}")
         raise HTTPException(status_code=502, detail=str(e))
