@@ -257,7 +257,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
+          0,
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
         );
@@ -581,11 +581,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         voiceDurationSeconds: seconds,
       );
 
-      final reply = await ApiService.sendMessage(
-        message: '',
-        memories: _memories,
-        history: history,
+      final reply = await _askBackend(
         audioWav: wav,
+        history: history,
       );
 
       if (!mounted) return;
@@ -602,6 +600,23 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<String> _askBackend({
+    String message = '',
+    required List<Map<String, String>> history,
+    Uint8List? audioWav,
+    Uint8List? image,
+    String? imageMimeType,
+  }) {
+    return ApiService.sendMessage(
+      message: message,
+      memories: _memories,
+      history: history,
+      audioWav: audioWav,
+      image: image,
+      imageMimeType: imageMimeType,
+    );
   }
 
   String _formatDuration(int seconds) {
@@ -990,72 +1005,17 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   Widget _chatView(bool wide) => Column(
         children: [
-          _glassCard(
-            child: Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: cyan, width: 2),
-                    image: const DecorationImage(
-                      image: AssetImage('assets/images/goku.jpg'),
-                      fit: BoxFit.cover,
-                      alignment: Alignment.topCenter,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '¿En qué puedo ayudarte hoy?',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: wide ? 16 : 14,
-                        ),
-                      ),
-                      Text(
-                        'Soy $_assistantName, tu asistente personal ✨',
-                        style: const TextStyle(color: muted, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
           Expanded(
             child: _messages.isEmpty
-                ? Center(
-                    child: Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: panel.withOpacity(.8),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: blue.withOpacity(.3)),
-                      ),
-                      child: const Text(
-                        '¿Qué tienes en mente hoy?',
-                        style: TextStyle(
-                          color: muted,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  )
+                ? const SizedBox.shrink()
                 : ListView.builder(
                     controller: _scroll,
+                    reverse: true,
                     padding: const EdgeInsets.symmetric(vertical: 5),
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
-                      return _messageBubble(_messages[index]);
+                      final messageIndex = _messages.length - 1 - index;
+                      return _messageBubble(_messages[messageIndex]);
                     },
                   ),
           ),
