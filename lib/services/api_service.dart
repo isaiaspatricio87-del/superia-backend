@@ -1,22 +1,24 @@
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Conexión fija al backend en Render
   static const String _backendChatUrl =
       'https://superia-backend-1.onrender.com/api/chat';
 
   static Future<String> sendMessage({
     required String message,
     required List<String> memories,
+    List<Map<String, String>> history = const [],
     Uint8List? audioWav,
     Uint8List? image,
     String? imageMimeType,
   }) async {
-    final Map<String, dynamic> payload = {
+    final payload = <String, dynamic>{
       'message': message,
       'memories': memories,
+      'history': history,
     };
 
     if (audioWav != null) {
@@ -59,9 +61,12 @@ class ApiService {
       return body['reply'].toString();
     } catch (error) {
       final text = error.toString().replaceFirst('Exception: ', '');
-      if (text.contains('Failed to fetch') || text.contains('XMLHttpRequest')) {
+
+      if (text.contains('Failed to fetch') ||
+          text.contains('XMLHttpRequest')) {
         throw Exception('Falló la conexión con Render. Revisa el backend.');
       }
+
       throw Exception(text);
     }
   }

@@ -304,6 +304,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           return 'Escribe qué quieres recordar. '
               'Ejemplo: /recordar Me gusta el café.';
         }
+
         setState(() => _memories.add(argument));
         await _save();
         return 'Listo, guardé en este dispositivo: “$argument”.';
@@ -327,7 +328,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   }
 
   void _handleSendOrStop() {
-    if (_loading) return;
+    if (_loading || _recording) return;
     _sendText();
   }
 
@@ -336,7 +337,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (text.isEmpty && _pickedImage == null) return;
     if (_loading) return;
 
-    // Capturamos el contexto antes de añadir el mensaje nuevo.
     final history = _conversationHistory();
     final image = _pickedImage;
     final imageName = _pickedImageName;
@@ -821,9 +821,13 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                           size: 21,
                         ),
                         SizedBox(width: 12),
-                        Text(
-                          'Nuevo chat',
-                          style: TextStyle(fontWeight: FontWeight.bold),
+                        Expanded(
+                          child: Text(
+                            'Nuevo chat',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
                         ),
                       ],
                     ),
@@ -1036,8 +1040,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                         border: Border.all(color: blue.withOpacity(.3)),
                       ),
                       child: const Text(
-                        'Escribe un mensaje o manda una nota de voz',
-                        style: TextStyle(color: muted),
+                        '¿Qué tienes en mente hoy?',
+                        style: TextStyle(
+                          color: muted,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -1045,20 +1053,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.symmetric(vertical: 5),
-                    itemCount: _messages.length + (_loading ? 1 : 0),
+                    itemCount: _messages.length,
                     itemBuilder: (context, index) {
-                      if (_loading && index == _messages.length) {
-                        return const Align(
-                          alignment: Alignment.centerLeft,
-                          child: Padding(
-                            padding: EdgeInsets.all(10),
-                            child: Text(
-                              'SuperIA está pensando…',
-                              style: TextStyle(color: cyan),
-                            ),
-                          ),
-                        );
-                      }
                       return _messageBubble(_messages[index]);
                     },
                   ),
@@ -1234,32 +1230,25 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     );
   }
 
-  Widget _composer() => _glassCard(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+  Widget _composer() => Container(
+        margin: const EdgeInsets.symmetric(horizontal: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xF208122B),
+          borderRadius: BorderRadius.circular(32),
+          border: Border.all(color: blue.withOpacity(.45)),
+          boxShadow: [
+            BoxShadow(color: blue.withOpacity(.12), blurRadius: 18),
+          ],
+        ),
         child: Row(
           children: [
             IconButton(
-              tooltip: _recording
-                  ? 'Terminar y enviar nota de voz'
-                  : 'Grabar nota de voz',
-              onPressed: _loading ? null : _toggleRecording,
-              icon: Icon(
-                _recording ? Icons.stop_circle : Icons.mic_none,
-                color: _recording ? Colors.redAccent : cyan,
-                size: 25,
-              ),
+              tooltip: 'Adjuntar imagen',
+              onPressed: _loading ? null : _pickImage,
+              icon: const Icon(Icons.add_rounded, color: muted, size: 25),
+              visualDensity: VisualDensity.compact,
             ),
-            if (_recording)
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: Text(
-                  _formatDuration(_recordingSeconds),
-                  style: const TextStyle(
-                    color: Colors.redAccent,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
             Expanded(
               child: TextField(
                 controller: _input,
@@ -1269,53 +1258,37 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 onSubmitted: (_) => _handleSendOrStop(),
                 decoration: const InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'Escribe un mensaje…',
+                  hintText: 'Preguntar a SuperIA',
                   isDense: true,
+                  contentPadding: EdgeInsets.symmetric(vertical: 10),
                 ),
               ),
             ),
             IconButton(
-              tooltip: 'Adjuntar imagen',
-              onPressed: _pickImage,
-              icon: const Icon(Icons.image_outlined, color: cyan),
-            ),
-            IconButton(
-              tooltip: _speakReplies
-                  ? 'Desactivar lectura'
-                  : 'Leer respuestas en voz alta',
-              onPressed: () async {
-                setState(() => _speakReplies = !_speakReplies);
-                await _save();
-                _toast(
-                  _speakReplies
-                      ? 'Lectura de voz activada.'
-                      : 'Lectura desactivada.',
-                );
-              },
+              tooltip: _recording
+                  ? 'Terminar y enviar nota de voz'
+                  : 'Grabar nota de voz',
+              onPressed: _loading ? null : _toggleRecording,
               icon: Icon(
-                _speakReplies ? Icons.volume_up : Icons.volume_down,
-                color: cyan,
+                _recording ? Icons.stop_circle : Icons.mic_none_rounded,
+                color: _recording ? Colors.redAccent : muted,
+                size: 23,
               ),
+              visualDensity: VisualDensity.compact,
             ),
-            const SizedBox(width: 4),
-            GestureDetector(
-              onTap: _loading ? null : _handleSendOrStop,
-              child: Container(
-                width: 42,
-                height: 42,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF9BE1FF),
-                  shape: BoxShape.circle,
+            const SizedBox(width: 3),
+            SizedBox(
+              width: 40,
+              height: 40,
+              child: IconButton.filled(
+                tooltip: 'Enviar mensaje',
+                onPressed: _loading || _recording ? null : _handleSendOrStop,
+                style: IconButton.styleFrom(
+                  backgroundColor: blue,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: blue.withOpacity(.45),
                 ),
-                child: Center(
-                  child: Icon(
-                    _loading
-                        ? Icons.hourglass_top_rounded
-                        : Icons.arrow_upward_rounded,
-                    color: Colors.black87,
-                    size: 24,
-                  ),
-                ),
+                icon: const Icon(Icons.arrow_upward_rounded, size: 22),
               ),
             ),
           ],
