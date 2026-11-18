@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -117,8 +118,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   bool _ready = false;
   bool _recording = false;
   int _recordingSeconds = 0;
-
-  StreamSubscription? _currentRequestSubscription;
 
   List<ChatItem> _messages = [];
   List<String> _memories = [];
@@ -266,6 +265,25 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     });
   }
 
+  List<Map<String, String>> _conversationHistory() {
+    final previous = _messages
+        .where((item) => item.text.trim().isNotEmpty)
+        .toList();
+
+    final recent = previous.length > 12
+        ? previous.sublist(previous.length - 12)
+        : previous;
+
+    return recent
+        .map(
+          (item) => <String, String>{
+            'role': item.user ? 'user' : 'model',
+            'text': item.text,
+          },
+        )
+        .toList();
+  }
+
   Future<String?> _runCommand(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return null;
@@ -279,7 +297,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         final now = DateTime.now();
         final time = TimeOfDay.fromDateTime(now).format(context);
         final date = MaterialLocalizations.of(context).formatMediumDate(now);
-        return 'Ahora son las $time del $date.';
+        return 'Ahora son las \(time del \)date.';
 
       case '/recordar':
         if (argument.isEmpty) {
@@ -308,18 +326,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
-  // Función para manejar el botón de enviar o detener el proceso actual
   void _handleSendOrStop() {
-    if (_loading) {
-      _currentRequestSubscription?.cancel();
-      setState(() {
-        _loading = false;
-        _currentRequestSubscription = null;
-      });
-      _toast('Investigación detenida.');
-      return;
-    }
-
+    if (_loading) return;
     _sendText();
   }
 
@@ -328,6 +336,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (text.isEmpty && _pickedImage == null) return;
     if (_loading) return;
 
+    // Capturamos el contexto antes de añadir el mensaje nuevo.
+    final history = _conversationHistory();
     final image = _pickedImage;
     final imageName = _pickedImageName;
     final imageMime = _pickedImageMime;
@@ -350,27 +360,18 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       );
 
       final commandReply = image == null ? await _runCommand(text) : null;
-
       final String reply;
+
       if (commandReply != null) {
         reply = commandReply;
       } else {
-        final completer = Completer<String>();
-
-        _currentRequestSubscription = Stream.fromFuture(
-          ApiService.sendMessage(
-            message: text,
-            memories: _memories,
-            image: image,
-            imageMimeType: imageMime,
-          ),
-        ).listen((res) {
-          if (!completer.isCompleted) completer.complete(res);
-        }, onError: (err) {
-          if (!completer.isCompleted) completer.completeError(err);
-        });
-
-        reply = await completer.future;
+        reply = await ApiService.sendMessage(
+          message: text,
+          memories: _memories,
+          history: history,
+          image: image,
+          imageMimeType: imageMime,
+        );
       }
 
       if (mounted) {
@@ -381,24 +382,22 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       if (mounted) {
         await _addMessage(
           false,
-          'Operación detenida o error de conexión.',
+          'No pude obtener respuesta: ${_friendlyError(error)}',
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _currentRequestSubscription = null;
-        });
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   String _friendlyError(Object error) {
     final text = error.toString().replaceFirst('Exception: ', '');
-    if (text.contains('Failed to fetch') || text.contains('XMLHttpRequest')) {
+
+    if (text.contains('Failed to fetch') ||
+        text.contains('XMLHttpRequest')) {
       return 'Falló la conexión con Render. Revisa el backend.';
     }
+
     return text;
   }
 
@@ -571,6 +570,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   Future<void> _sendVoice(Uint8List wav, int seconds) async {
     if (_loading) return;
 
+    final history = _conversationHistory();
     setState(() => _loading = true);
 
     try {
@@ -581,33 +581,27 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         voiceDurationSeconds: seconds,
       );
 
-      final reply = await _askBackend(audioWav: wav);
+      final reply = await ApiService.sendMessage(
+        message: '',
+        memories: _memories,
+        history: history,
+        audioWav: wav,
+      );
+
+      if (!mounted) return;
 
       await _addMessage(false, reply);
       if (_speakReplies) await _speak(reply);
     } catch (error) {
-      await _addMessage(
-        false,
-        'No pude enviar la nota de voz: ${_friendlyError(error)}',
-      );
+      if (mounted) {
+        await _addMessage(
+          false,
+          'No pude enviar la nota de voz: ${_friendlyError(error)}',
+        );
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  Future<String> _askBackend({
-    String message = '',
-    Uint8List? audioWav,
-    Uint8List? image,
-    String? imageMimeType,
-  }) async {
-    return await ApiService.sendMessage(
-      message: message,
-      memories: _memories,
-      audioWav: audioWav,
-      image: image,
-      imageMimeType: imageMimeType,
-    );
   }
 
   String _formatDuration(int seconds) {
@@ -696,7 +690,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   void dispose() {
     _recordingTimer?.cancel();
     _recordingSubscription?.cancel();
-    _currentRequestSubscription?.cancel();
     _recorder.dispose();
     _tts.stop();
     _input.dispose();
@@ -800,7 +793,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             const SizedBox(height: 20),
             _statusPill(),
             const SizedBox(height: 18),
-            
             Padding(
               padding: const EdgeInsets.only(bottom: 7),
               child: Material(
@@ -813,23 +805,32 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                   },
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: cyan.withOpacity(.5)),
                     ),
                     child: const Row(
                       children: [
-                        Icon(Icons.add_comment_outlined, color: cyan, size: 21),
+                        Icon(
+                          Icons.add_comment_outlined,
+                          color: cyan,
+                          size: 21,
+                        ),
                         SizedBox(width: 12),
-                        Text('Nuevo chat', style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(
+                          'Nuevo chat',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ],
                     ),
                   ),
                 ),
               ),
             ),
-
             for (var i = 0; i < _navLabels.length; i++)
               _navButton(i, expanded: true),
             const Spacer(),
@@ -1044,8 +1045,20 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.symmetric(vertical: 5),
-                    itemCount: _messages.length,
+                    itemCount: _messages.length + (_loading ? 1 : 0),
                     itemBuilder: (context, index) {
+                      if (_loading && index == _messages.length) {
+                        return const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                            padding: EdgeInsets.all(10),
+                            child: Text(
+                              'SuperIA está pensando…',
+                              style: TextStyle(color: cyan),
+                            ),
+                          ),
+                        );
+                      }
                       return _messageBubble(_messages[index]);
                     },
                   ),
@@ -1139,7 +1152,41 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             const SizedBox(height: 5),
           ],
           if (item.text.isNotEmpty && !item.isVoice)
-            SelectableText(item.text),
+            item.user
+                ? SelectableText(item.text)
+                : MarkdownBody(
+                    data: item.text,
+                    selectable: true,
+                    styleSheet: MarkdownStyleSheet.fromTheme(
+                      Theme.of(context),
+                    ).copyWith(
+                      p: const TextStyle(color: Colors.white, height: 1.45),
+                      strong: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      h1: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                      h2: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      h3: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      a: const TextStyle(
+                        color: cyan,
+                        decoration: TextDecoration.underline,
+                      ),
+                      listBullet: const TextStyle(color: Colors.white),
+                    ),
+                  ),
           const SizedBox(height: 4),
           Text(
             '${item.user ? 'Tú' : _assistantName} · '
@@ -1187,7 +1234,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     );
   }
 
-  // Barra de escritura con la flecha hacia arriba solicitada y botón de detener
   Widget _composer() => _glassCard(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
         child: Row(
@@ -1252,19 +1298,20 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               ),
             ),
             const SizedBox(width: 4),
-            // Botón personalizado circular con flecha hacia arriba (o stop si está cargando)
             GestureDetector(
-              onTap: _handleSendOrStop,
+              onTap: _loading ? null : _handleSendOrStop,
               child: Container(
                 width: 42,
                 height: 42,
                 decoration: const BoxDecoration(
-                  color: Color(0xFF9BE1FF), // Azul claro
+                  color: Color(0xFF9BE1FF),
                   shape: BoxShape.circle,
                 ),
                 child: Center(
                   child: Icon(
-                    _loading ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                    _loading
+                        ? Icons.hourglass_top_rounded
+                        : Icons.arrow_upward_rounded,
                     color: Colors.black87,
                     size: 24,
                   ),
@@ -1299,7 +1346,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '${command.icon}  ${command.title}',
+                        '\({command.icon}  \){command.title}',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
