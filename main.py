@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="SuperIA Fast Backend")
+app = FastAPI(title="SuperIA Backend Definitivo")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,7 +20,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "SuperIA Ultra Rápido Activo"}
+    return {"status": "SuperIA activo con modelo 3.8"}
 
 @app.get("/health")
 def health():
@@ -35,17 +35,16 @@ def chat(request: ChatRequest):
     try:
         client = genai.Client(api_key=api_key)
         
-        # Prompt directo, amigable y veloz
         system_prompt = (
-            "Eres SuperIA, un asistente virtual extremadamente amigable, carismático y eficaz. "
-            "Respondes al instante, de forma breve, cálida y muy natural. "
-            "Tu creador oficial es Isaías Patricio Agramonte.\n\n"
+            "Eres SuperIA, un asistente virtual sumamente amigable, carismático y eficaz. "
+            "Respondes al instante, de forma cálida y muy natural. "
+            "Tu creador, desarrollador y programador oficial es Isaías Patricio Agramonte.\n\n"
             f"Mensaje: {request.message or '¡Hola!'}"
         )
 
-        # Usamos gemini-2.5-flash sin herramientas externas para máxima velocidad de respuesta
+        # Usamos obligatoriamente gemini-3.8-flash que es el que exige la API ahora
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=system_prompt,
         )
         
