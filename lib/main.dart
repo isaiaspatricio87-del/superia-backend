@@ -118,6 +118,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   bool _recording = false;
   int _recordingSeconds = 0;
 
+  StreamSubscription? _currentRequestSubscription;
+
   List<ChatItem> _messages = [];
   List<String> _memories = [];
 
@@ -306,19 +308,19 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
-  Future<String> _askBackend({
-    String message = '',
-    Uint8List? audioWav,
-    Uint8List? image,
-    String? imageMimeType,
-  }) async {
-    return await ApiService.sendMessage(
-      message: message,
-      memories: _memories,
-      audioWav: audioWav,
-      image: image,
-      imageMimeType: imageMimeType,
-    );
+  // Función para manejar el botón de enviar o detener el proceso actual
+  void _handleSendOrStop() {
+    if (_loading) {
+      _currentRequestSubscription?.cancel();
+      setState(() {
+        _loading = false;
+        _currentRequestSubscription = null;
+      });
+      _toast('Investigación detenida.');
+      return;
+    }
+
+    _sendText();
   }
 
   Future<void> _sendText() async {
@@ -353,22 +355,42 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       if (commandReply != null) {
         reply = commandReply;
       } else {
-        reply = await _askBackend(
-          message: text,
-          image: image,
-          imageMimeType: imageMime,
-        );
+        final completer = Completer<String>();
+
+        _currentRequestSubscription = Stream.fromFuture(
+          ApiService.sendMessage(
+            message: text,
+            memories: _memories,
+            image: image,
+            imageMimeType: imageMime,
+          ),
+        ).listen((res) {
+          if (!completer.isCompleted) completer.complete(res);
+        }, onError: (err) {
+          if (!completer.isCompleted) completer.completeError(err);
+        });
+
+        reply = await completer.future;
       }
 
-      await _addMessage(false, reply);
-      if (_speakReplies) await _speak(reply);
+      if (mounted) {
+        await _addMessage(false, reply);
+        if (_speakReplies) await _speak(reply);
+      }
     } catch (error) {
-      await _addMessage(
-        false,
-        'Error: ${_friendlyError(error)}',
-      );
+      if (mounted) {
+        await _addMessage(
+          false,
+          'Operación detenida o error de conexión.',
+        );
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _currentRequestSubscription = null;
+        });
+      }
     }
   }
 
@@ -573,6 +595,21 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
+  Future<String> _askBackend({
+    String message = '',
+    Uint8List? audioWav,
+    Uint8List? image,
+    String? imageMimeType,
+  }) async {
+    return await ApiService.sendMessage(
+      message: message,
+      memories: _memories,
+      audioWav: audioWav,
+      image: image,
+      imageMimeType: imageMimeType,
+    );
+  }
+
   String _formatDuration(int seconds) {
     final minutes = seconds ~/ 60;
     final remainder = seconds % 60;
@@ -659,6 +696,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   void dispose() {
     _recordingTimer?.cancel();
     _recordingSubscription?.cancel();
+    _currentRequestSubscription?.cancel();
     _recorder.dispose();
     _tts.stop();
     _input.dispose();
@@ -763,7 +801,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             _statusPill(),
             const SizedBox(height: 18),
             
-            // Botón directo de Nuevo Chat en el menú lateral
             Padding(
               padding: const EdgeInsets.only(bottom: 7),
               child: Material(
@@ -1007,20 +1044,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 : ListView.builder(
                     controller: _scroll,
                     padding: const EdgeInsets.symmetric(vertical: 5),
-                    itemCount: _messages.length + (_loading ? 1 : 0),
+                    itemCount: _messages.length,
                     itemBuilder: (context, index) {
-                      if (_loading && index == _messages.length) {
-                        return const Align(
-                          alignment: Alignment.centerLeft,
-                          child: Padding(
-                            padding: EdgeInsets.all(10),
-                            child: Text(
-                              'Pensando…',
-                              style: TextStyle(color: cyan),
-                            ),
-                          ),
-                        );
-                      }
                       return _messageBubble(_messages[index]);
                     },
                   ),
@@ -1162,6 +1187,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     );
   }
 
+  // Barra de escritura con la flecha hacia arriba solicitada y botón de detener
   Widget _composer() => _glassCard(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
         child: Row(
@@ -1194,7 +1220,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _sendText(),
+                onSubmitted: (_) => _handleSendOrStop(),
                 decoration: const InputDecoration(
                   border: InputBorder.none,
                   hintText: 'Escribe un mensaje…',
@@ -1225,12 +1251,24 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 color: cyan,
               ),
             ),
-            IconButton.filled(
-              onPressed: _loading || _recording ? null : _sendText,
-              icon: const Icon(Icons.send_rounded),
-              style: IconButton.styleFrom(
-                backgroundColor: blue,
-                foregroundColor: Colors.white,
+            const SizedBox(width: 4),
+            // Botón personalizado circular con flecha hacia arriba (o stop si está cargando)
+            GestureDetector(
+              onTap: _handleSendOrStop,
+              child: Container(
+                width: 42,
+                height: 42,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF9BE1FF), // Azul claro
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Icon(
+                    _loading ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                    color: Colors.black87,
+                    size: 24,
+                  ),
+                ),
               ),
             ),
           ],
