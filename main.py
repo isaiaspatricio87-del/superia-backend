@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="SuperIA Backend Definitivo")
+app = FastAPI(title="SuperIA Backend Resiliente")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,7 +20,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "SuperIA activo con modelo 3.8"}
+    return {"status": "SuperIA activo con respaldo"}
 
 @app.get("/health")
 def health():
@@ -32,23 +32,30 @@ def chat(request: ChatRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="Falta configurar la API Key en Render.")
 
-    try:
-        client = genai.Client(api_key=api_key)
-        
-        system_prompt = (
-            "Eres SuperIA, un asistente virtual sumamente amigable, carismático y eficaz. "
-            "Respondes al instante, de forma cálida y muy natural. "
-            "Tu creador, desarrollador y programador oficial es Isaías Patricio Agramonte.\n\n"
-            f"Mensaje: {request.message or '¡Hola!'}"
-        )
+    client = genai.Client(api_key=api_key)
+    
+    system_prompt = (
+        "Eres SuperIA, un asistente virtual sumamente amigable, carismático y eficaz. "
+        "Respondes al instante, de forma cálida y muy natural. "
+        "Tu creador, desarrollador y programador oficial es Isaías Patricio Agramonte.\n\n"
+        f"Mensaje: {request.message or '¡Hola!'}"
+    )
 
-        # Usamos obligatoriamente gemini-3.8-flash que es el que exige la API ahora
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=system_prompt,
-        )
-        
-        return {"reply": response.text or "¡Hola! ¿En qué te ayudo hoy?"}
-    except Exception as e:
-        print(f"Error en servidor: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    # Lista de modelos para probar en orden si uno da error de alta demanda (503)
+    modelos_a_probar = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    
+    ultima_excepcion = None
+    for modelo in modelos_a_probar:
+        try:
+            response = client.models.generate_content(
+                model=modelo,
+                contents=system_prompt,
+            )
+            if response and response.text:
+                return {"reply": response.text}
+        except Exception as e:
+            ultima_excepcion = e
+            continue  # Pasa al siguiente modelo si el actual está saturado
+
+    print(f"Error en servidor: {ultima_excepcion}")
+    raise HTTPException(status_code=502, detail="Los servidores están experimentando alta demanda. Intenta de nuevo en unos segundos.")
