@@ -4,70 +4,76 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String _backendChatUrl =
-      'https://superia-backend-1.onrender.com/api/chat';
+  static const String baseUrl = 'https://TU-BACKEND.onrender.com';
+
+  static Future> login({
+    required String email,
+    required String password,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/auth/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'email': email, 'password': password}),
+    );
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception(data['detail'] ?? 'Error al iniciar sesión.');
+    }
+    return data;
+  }
+
+  static Future> register({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/auth/register'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'name': name, 'email': email, 'password': password}),
+    );
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception(data['detail'] ?? 'Error al crear cuenta.');
+    }
+    return data;
+  }
 
   static Future<String> sendMessage({
+    required String authToken,
     required String message,
     required List<String> memories,
-    List<Map<String, String>> history = const [],
-    Uint8List? audioWav,
+    required List> history,
     Uint8List? image,
     String? imageMimeType,
+    Uint8List? audioWav,
   }) async {
-    final payload = <String, dynamic>{
+    final body = <String, dynamic>{
       'message': message,
       'memories': memories,
       'history': history,
+      if (image != null) 'image_base64': base64Encode(image),
+      if (imageMimeType != null) 'image_mime_type': imageMimeType,
+      if (audioWav != null) 'audio_base64': base64Encode(audioWav),
+      if (audioWav != null) 'audio_mime_type': 'audio/wav',
     };
 
-    if (audioWav != null) {
-      payload['audio_base64'] = base64Encode(audioWav);
-      payload['audio_mime_type'] = 'audio/wav';
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/chat'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $authToken',
+      },
+      body: jsonEncode(body),
+    );
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception(data['detail'] ?? 'Error en el servidor.');
     }
 
-    if (image != null) {
-      payload['image_base64'] = base64Encode(image);
-      payload['image_mime_type'] = imageMimeType ?? 'image/jpeg';
-    }
-
-    try {
-      final response = await http
-          .post(
-            Uri.parse(_backendChatUrl),
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 90));
-
-      dynamic body;
-      try {
-        body = jsonDecode(response.body);
-      } catch (_) {
-        body = null;
-      }
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        final detail = body is Map ? body['detail'] : null;
-        throw Exception(
-          detail?.toString() ?? 'Error HTTP ${response.statusCode}',
-        );
-      }
-
-      if (body is! Map || !body.containsKey('reply')) {
-        throw Exception('El servidor devolvió una respuesta inválida.');
-      }
-
-      return body['reply'].toString();
-    } catch (error) {
-      final text = error.toString().replaceFirst('Exception: ', '');
-
-      if (text.contains('Failed to fetch') ||
-          text.contains('XMLHttpRequest')) {
-        throw Exception('Falló la conexión con Render. Revisa el backend.');
-      }
-
-      throw Exception(text);
-    }
+    return data['reply']?.toString() ?? '';
   }
 }

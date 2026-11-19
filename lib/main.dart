@@ -41,7 +41,353 @@ class SuperIAApp extends StatelessWidget {
           behavior: SnackBarBehavior.floating,
         ),
       ),
-      home: const SuperIAHome(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _checking = true;
+  String? _token;
+  String _userName = '';
+  String _userEmail = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreSession();
+  }
+
+  Future<void> _restoreSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('authToken');
+    final name = prefs.getString('userName') ?? '';
+    final email = prefs.getString('userEmail') ?? '';
+
+    if (mounted) {
+      setState(() {
+        _token = (token != null && token.isNotEmpty) ? token : null;
+        _userName = name;
+        _userEmail = email;
+        _checking = false;
+      });
+    }
+  }
+
+  Future<void> _onAuthenticated({
+    required String token,
+    required String name,
+    required String email,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('authToken', token);
+    await prefs.setString('userName', name);
+    await prefs.setString('userEmail', email);
+
+    if (mounted) {
+      setState(() {
+        _token = token;
+        _userName = name;
+        _userEmail = email;
+      });
+    }
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('authToken');
+    await prefs.remove('userName');
+    await prefs.remove('userEmail');
+
+    if (mounted) {
+      setState(() {
+        _token = null;
+        _userName = '';
+        _userEmail = '';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_checking) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_token == null) {
+      return LoginScreen(onSuccess: _onAuthenticated);
+    }
+
+    return SuperIAHome(
+      authToken: _token!,
+      userName: _userName,
+      userEmail: _userEmail,
+      onLogout: _logout,
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key, required this.onSuccess});
+
+  final Future<void> Function({
+    required String token,
+    required String name,
+    required String email,
+  }) onSuccess;
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  bool _isRegister = false;
+  bool _submitting = false;
+  bool _obscurePassword = true;
+
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _emailCtrl = TextEditingController();
+  final TextEditingController _passwordCtrl = TextEditingController();
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _submit() async {
+    final name = _nameCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final password = _passwordCtrl.text;
+
+    if (_isRegister && name.length < 2) {
+      _showError('Escribe tu nombre para crear tu cuenta.');
+      return;
+    }
+    if (email.isEmpty || !email.contains('@')) {
+      _showError('Escribe un correo electrónico válido.');
+      return;
+    }
+    if (password.length < 6) {
+      _showError('La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+
+    setState(() => _submitting = true);
+
+    try {
+      final result = _isRegister
+          ? await ApiService.register(
+              name: name,
+              email: email,
+              password: password,
+            )
+          : await ApiService.login(
+              email: email,
+              password: password,
+            );
+
+      final token = result['token']?.toString() ?? '';
+      final userMap = Map<String, dynamic>.from(
+        (result['user'] as Map?) ?? const {},
+      );
+      final resolvedName = userMap['name']?.toString() ?? name;
+      final resolvedEmail = userMap['email']?.toString() ?? email;
+
+      if (token.isEmpty) {
+        throw Exception('No se recibió token de sesión.');
+      }
+
+      await widget.onSuccess(
+        token: token,
+        name: resolvedName,
+        email: resolvedEmail,
+      );
+    } catch (e) {
+      _showError(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _passwordCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset(
+              'assets/images/goku.jpg',
+              fit: BoxFit.cover,
+              alignment: const Alignment(0.45, -0.15),
+            ),
+          ),
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [
+                    bg.withOpacity(.95),
+                    bg.withOpacity(.85),
+                    bg.withOpacity(.65),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: panel,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: blue.withOpacity(.55)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: cyan.withOpacity(.14),
+                          blurRadius: 24,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.all_inclusive, size: 46, color: cyan),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'SuperIA',
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          _isRegister
+                              ? 'Crea tu cuenta para entrar'
+                              : 'Inicia sesión para entrar',
+                          style: const TextStyle(color: muted, fontSize: 13),
+                        ),
+                        const SizedBox(height: 22),
+                        if (_isRegister) ...[
+                          TextField(
+                            controller: _nameCtrl,
+                            textInputAction: TextInputAction.next,
+                            decoration: const InputDecoration(
+                              labelText: 'Nombre',
+                              prefixIcon:
+                                  Icon(Icons.person_outline, color: cyan),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        TextField(
+                          controller: _emailCtrl,
+                          keyboardType: TextInputType.emailAddress,
+                          textInputAction: TextInputAction.next,
+                          decoration: const InputDecoration(
+                            labelText: 'Correo electrónico',
+                            prefixIcon: Icon(Icons.email_outlined, color: cyan),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _passwordCtrl,
+                          obscureText: _obscurePassword,
+                          textInputAction: TextInputAction.done,
+                          onSubmitted: (_) => _submitting ? null : _submit(),
+                          decoration: InputDecoration(
+                            labelText: 'Contraseña',
+                            prefixIcon:
+                                const Icon(Icons.lock_outline, color: cyan),
+                            suffixIcon: IconButton(
+                              onPressed: () => setState(
+                                () => _obscurePassword = !_obscurePassword,
+                              ),
+                              icon: Icon(
+                                _obscurePassword
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                                color: muted,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 46,
+                          child: FilledButton(
+                            onPressed: _submitting ? null : _submit,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: blue,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: _submitting
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.4,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Text(
+                                    _isRegister
+                                        ? 'Crear cuenta y entrar'
+                                        : 'Iniciar sesión',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextButton(
+                          onPressed: _submitting
+                              ? null
+                              : () => setState(() => _isRegister = !_isRegister),
+                          child: Text(
+                            _isRegister
+                                ? '¿Ya tienes cuenta? Inicia sesión'
+                                : '¿No tienes cuenta? Regístrate aquí',
+                            style: const TextStyle(color: cyan),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -103,7 +449,18 @@ class AssistantCommand {
 }
 
 class SuperIAHome extends StatefulWidget {
-  const SuperIAHome({super.key});
+  const SuperIAHome({
+    super.key,
+    required this.authToken,
+    required this.userName,
+    required this.userEmail,
+    required this.onLogout,
+  });
+
+  final String authToken;
+  final String userName;
+  final String userEmail;
+  final Future<void> Function() onLogout;
 
   @override
   State<SuperIAHome> createState() => _SuperIAHomeState();
@@ -121,15 +478,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   StreamSubscription? _currentRequestSubscription;
 
-  List<ChatItem> _messages = [
-    ChatItem(
-      user: false,
-      text: '¡Hola, Isaías! 👋 Soy **SuperIA**, tu asistente personal avanzado.\n\n'
-          'Estoy listo para ayudarte con tus investigaciones, redactar exámenes, analizar documentos o conversar cuando gustes. 🚀\n\n'
-          '¿Qué te gustaría hacer hoy?',
-      time: DateTime.now(),
-    )
-  ];
+  List<ChatItem> _messages = [];
   List<String> _memories = [];
 
   Uint8List? _pickedImage;
@@ -148,6 +497,15 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   StreamSubscription<Uint8List>? _recordingSubscription;
   final List<Uint8List> _recordedPcmChunks = [];
   Timer? _recordingTimer;
+
+  String get _chatKey => 'chat_${widget.userEmail.toLowerCase()}';
+  String get _memoryKey => 'memories_${widget.userEmail.toLowerCase()}';
+
+  String get _heroWelcomeTitle {
+    final name = widget.userName.trim();
+    if (name.isEmpty) return '¿En qué te ayudo hoy?';
+    return '¿Qué tenemos en la agenda hoy, $name?';
+  }
 
   static const List<String> _navLabels = [
     'Chat',
@@ -191,7 +549,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     final prefs = await SharedPreferences.getInstance();
 
     try {
-      final decoded = jsonDecode(prefs.getString('chat') ?? '[]') as List;
+      final decoded = jsonDecode(prefs.getString(_chatKey) ?? '[]') as List;
       final loadedMessages = decoded
           .map(
             (item) => ChatItem.fromJson(
@@ -199,14 +557,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             ),
           )
           .toList();
-      if (loadedMessages.isNotEmpty) {
-        _messages = loadedMessages;
-      }
+      _messages = loadedMessages;
     } catch (_) {
-      // Mantiene la bienvenida por defecto si hay error al decodificar
+      _messages = [];
     }
 
-    _memories = prefs.getStringList('memories') ?? [];
+    _memories = prefs.getStringList(_memoryKey) ?? [];
     _assistantName = prefs.getString('assistantName') ?? 'SuperIA';
     _speakReplies = prefs.getBool('speakReplies') ?? false;
     _nameInput.text = _assistantName;
@@ -218,10 +574,10 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.setString(
-      'chat',
+      _chatKey,
       jsonEncode(_messages.map((item) => item.toJson()).toList()),
     );
-    await prefs.setStringList('memories', _memories);
+    await prefs.setStringList(_memoryKey, _memories);
     await prefs.setString('assistantName', _assistantName);
     await prefs.setBool('speakReplies', _speakReplies);
   }
@@ -279,9 +635,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   }
 
   List> _conversationHistory() {
-    final previous = _messages
-        .where((item) => item.text.trim().isNotEmpty)
-        .toList();
+    final previous =
+        _messages.where((item) => item.text.trim().isNotEmpty).toList();
 
     final recent = previous.length > 12
         ? previous.sublist(previous.length - 12)
@@ -314,10 +669,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
       case '/recordar':
         if (argument.isEmpty) {
-          return 'Escribe qué quieres recordar. '
-              'Ejemplo: /recordar Me gusta el café.';
+          return 'Escribe qué quieres recordar. Ejemplo: /recordar Me gusta el café.';
         }
-
         setState(() => _memories.add(argument));
         await _save();
         return 'Listo, guardé en este dispositivo: “$argument”.';
@@ -329,20 +682,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       case '/limpiar':
         setState(() {
           _messages.clear();
-          _messages.add(
-            ChatItem(
-              user: false,
-              text: '¡Chat limpio! ¿De qué quieres hablar ahora, Isaías?',
-              time: DateTime.now(),
-            ),
-          );
         });
         await _save();
         return 'Chat limpio. Tus notas siguen guardadas.';
 
       case '/ayuda':
-        return 'Comandos: /hora, /recordar [nota], '
-            '/memoria, /limpiar y /ayuda.';
+        return 'Comandos: /hora, /recordar [nota], /memoria, /limpiar y /ayuda.';
 
       default:
         return null;
@@ -401,6 +746,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
         _currentRequestSubscription = Stream.fromFuture(
           ApiService.sendMessage(
+            authToken: widget.authToken,
             message: text,
             memories: _memories,
             history: history,
@@ -424,7 +770,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       if (mounted) {
         await _addMessage(
           false,
-          'Operación detenida o error de conexión.',
+          'Error: ${_friendlyError(error)}',
         );
       }
     } finally {
@@ -439,12 +785,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   String _friendlyError(Object error) {
     final text = error.toString().replaceFirst('Exception: ', '');
-
-    if (text.contains('Failed to fetch') ||
-        text.contains('XMLHttpRequest')) {
+    if (text.contains('Failed to fetch') || text.contains('XMLHttpRequest')) {
       return 'Falló la conexión con Render. Revisa el backend.';
     }
-
     return text;
   }
 
@@ -628,9 +971,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         voiceDurationSeconds: seconds,
       );
 
-      final reply = await _askBackend(
-        audioWav: wav,
+      final reply = await ApiService.sendMessage(
+        authToken: widget.authToken,
+        message: '',
+        memories: _memories,
         history: history,
+        audioWav: wav,
       );
 
       if (!mounted) return;
@@ -647,23 +993,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  Future<String> _askBackend({
-    String message = '',
-    required List> history,
-    Uint8List? audioWav,
-    Uint8List? image,
-    String? imageMimeType,
-  }) {
-    return ApiService.sendMessage(
-      message: message,
-      memories: _memories,
-      history: history,
-      audioWav: audioWav,
-      image: image,
-      imageMimeType: imageMimeType,
-    );
   }
 
   String _formatDuration(int seconds) {
@@ -708,13 +1037,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   Future<void> _clearChat() async {
     setState(() {
       _messages.clear();
-      _messages.add(
-        ChatItem(
-          user: false,
-          text: '¡Nuevo chat iniciado, Isaías! ¿Qué investigamos hoy? 🚀',
-          time: DateTime.now(),
-        ),
-      );
     });
     await _save();
     _toast('Nuevo chat iniciado.');
@@ -726,7 +1048,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Borrar datos locales'),
         content: const Text(
-          'Se borrarán el historial, las memorias y los ajustes de este dispositivo.',
+          'Se borrarán tu historial y memorias guardadas en este dispositivo.',
         ),
         actions: [
           TextButton(
@@ -744,21 +1066,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (confirmed != true) return;
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    await prefs.remove(_chatKey);
+    await prefs.remove(_memoryKey);
 
     setState(() {
       _messages.clear();
-      _messages.add(
-        ChatItem(
-          user: false,
-          text: '¡Hola, Isaías! 👋 Soy **SuperIA**, tu asistente personal.',
-          time: DateTime.now(),
-        ),
-      );
       _memories.clear();
-      _assistantName = 'SuperIA';
-      _speakReplies = false;
-      _nameInput.text = 'SuperIA';
     });
 
     _toast('Datos borrados.');
@@ -849,7 +1162,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   }
 
   Widget _sideNav() => Container(
-        width: 205,
+        width: 215,
         padding: const EdgeInsets.fromLTRB(13, 20, 13, 14),
         decoration: BoxDecoration(
           color: const Color(0xF203071A),
@@ -869,10 +1182,25 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               textAlign: TextAlign.center,
               style: TextStyle(color: cyan, fontSize: 11, letterSpacing: 2),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 14),
             _statusPill(),
-            const SizedBox(height: 18),
-            
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: panel.withOpacity(.7),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: blue.withOpacity(.35)),
+              ),
+              child: Text(
+                widget.userName.isNotEmpty ? widget.userName : widget.userEmail,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: muted, fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 14),
             Padding(
               padding: const EdgeInsets.only(bottom: 7),
               child: Material(
@@ -915,7 +1243,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 ),
               ),
             ),
-
             for (var i = 0; i < _navLabels.length; i++)
               _navButton(i, expanded: true),
             const Spacer(),
@@ -1069,26 +1396,58 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
   }
 
-  Widget _chatView(bool wide) => Column(
-        children: [
-          Expanded(
-            child: _messages.isEmpty
-                ? const SizedBox.shrink()
-                : ListView.builder(
-                    controller: _scroll,
-                    reverse: false, // Alineado correctamente de arriba hacia abajo
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      return _messageBubble(_messages[index]);
-                    },
+  Widget _chatView(bool wide) {
+    if (_messages.isEmpty) {
+      return Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _heroWelcomeTitle,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: wide ? 30 : 23,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                    height: 1.25,
                   ),
+                ),
+                const SizedBox(height: 22),
+                if (_pickedImage != null) ...[
+                  _imagePreview(),
+                  const SizedBox(height: 8),
+                ],
+                _composer(),
+              ],
+            ),
           ),
-          if (_pickedImage != null) _imagePreview(),
-          const SizedBox(height: 8),
-          _composer(),
-        ],
+        ),
       );
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
+            controller: _scroll,
+            reverse: false,
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            itemCount: _messages.length,
+            itemBuilder: (context, index) {
+              return _messageBubble(_messages[index]);
+            },
+          ),
+        ),
+        if (_pickedImage != null) _imagePreview(),
+        const SizedBox(height: 8),
+        _composer(),
+      ],
+    );
+  }
 
   Widget _imagePreview() => Container(
         margin: const EdgeInsets.only(top: 6),
@@ -1255,7 +1614,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     );
   }
 
-  // Barra inferior con botón de enviar/detener dinámico (Flecha arriba / Stop)
   Widget _composer() => Container(
         margin: const EdgeInsets.symmetric(horizontal: 2),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
@@ -1282,11 +1640,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
                 onSubmitted: (_) => _handleSendOrStop(),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'Preguntar a SuperIA',
+                  hintText: 'Preguntar a $_assistantName',
                   isDense: true,
-                  contentPadding: EdgeInsets.symmetric(vertical: 10),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 ),
               ),
             ),
@@ -1455,7 +1813,37 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   Widget _settingsView() => ListView(
         children: [
-          _title('Ajustes', 'Personaliza tu asistente.'),
+          _title('Ajustes', 'Personaliza tu asistente y tu cuenta.'),
+          _glassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Cuenta activa',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Nombre: ${widget.userName}',
+                  style: const TextStyle(color: muted),
+                ),
+                Text(
+                  'Correo: ${widget.userEmail}',
+                  style: const TextStyle(color: muted),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: OutlinedButton.icon(
+                    onPressed: widget.onLogout,
+                    icon: const Icon(Icons.logout, color: Colors.amberAccent),
+                    label: const Text('Cerrar sesión'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
           _glassCard(
             child: Column(
               children: [
