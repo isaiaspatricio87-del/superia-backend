@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_sign_in_web/web_only.dart' as web;
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -96,6 +99,9 @@ class _AuthGateState extends State<AuthGate> {
     await prefs.setString('userName', name);
     await prefs.setString('userEmail', email);
 
+    await prefs.setString('lastUserName', name);
+    await prefs.setString('lastUserEmail', email);
+
     if (mounted) {
       setState(() {
         _token = token;
@@ -155,13 +161,110 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  static Future<void>? _sharedGoogleInit;
+
+  bool _showEmailForm = false;
   bool _isRegister = false;
   bool _submitting = false;
   bool _obscurePassword = true;
+  bool _googleReady = false;
+
+  String _lastAccountName = '';
+  String _lastAccountEmail = '';
+
+  StreamSubscription<GoogleSignInAuthenticationEvent>? _googleSub;
 
   final TextEditingController _nameCtrl = TextEditingController();
   final TextEditingController _emailCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLastAccount();
+    _initGoogleSignIn();
+  }
+
+  Future<void> _initGoogleSignIn() async {
+    try {
+      final signIn = GoogleSignIn.instance;
+      _sharedGoogleInit ??= signIn.initialize();
+      await _sharedGoogleInit;
+
+      _googleSub = signIn.authenticationEvents.listen(
+        (event) {
+          if (event is GoogleSignInAuthenticationEventSignIn) {
+            _handleGoogleAccount(event.user);
+          }
+        },
+        onError: (err) {
+          _showError('Error al seleccionar cuenta de Google: $err');
+        },
+      );
+
+      if (mounted) {
+        setState(() => _googleReady = true);
+      }
+    } catch (e) {
+      final clean = e.toString().replaceFirst('Exception: ', '');
+      if (clean.contains('ClientID not set') ||
+          clean.contains('google-signin-client_id')) {
+        _showError('Falta pegar tu Client ID de Google en web/index.html.');
+      } else {
+        _showError('No se pudo inicializar Google Sign-In: $clean');
+      }
+    }
+  }
+
+  Future<void> _handleGoogleAccount(GoogleSignInAccount account) async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+
+    try {
+      final email = account.email;
+      final name = (account.displayName != null &&
+              account.displayName!.trim().isNotEmpty)
+          ? account.displayName!.trim()
+          : email.split('@').first;
+
+      final result = await ApiService.googleQuickLogin(
+        name: name,
+        email: email,
+      );
+      final token = result['token']?.toString() ?? '';
+      final userMap = Map<String, dynamic>.from(
+        (result['user'] as Map?) ?? const {},
+      );
+
+      if (token.isEmpty) {
+        throw Exception('No se recibió token de sesión.');
+      }
+
+      await widget.onSuccess(
+        token: token,
+        name: userMap['name']?.toString() ?? name,
+        email: userMap['email']?.toString() ?? email,
+      );
+    } catch (e) {
+      final clean = e.toString().replaceFirst('Exception: ', '');
+      _showError(
+        clean.contains('TimeoutException')
+            ? 'El servidor tardó demasiado en responder.'
+            : clean,
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _loadLastAccount() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _lastAccountName = prefs.getString('lastUserName') ?? '';
+      _lastAccountEmail = prefs.getString('lastUserEmail') ?? '';
+    });
+  }
 
   void _showError(String msg) {
     if (!mounted) return;
@@ -175,6 +278,40 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       );
+  }
+
+  Future<void> _continueWithSavedAccount() async {
+    if (_lastAccountEmail.isEmpty) return;
+    setState(() => _submitting = true);
+    try {
+      final result = await ApiService.googleQuickLogin(
+        name: _lastAccountName.isNotEmpty
+            ? _lastAccountName
+            : _lastAccountEmail.split('@').first,
+        email: _lastAccountEmail,
+      );
+      final token = result['token']?.toString() ?? '';
+      final userMap = Map<String, dynamic>.from(
+        (result['user'] as Map?) ?? const {},
+      );
+      if (token.isEmpty) {
+        throw Exception('No se recibió token de sesión.');
+      }
+      await widget.onSuccess(
+        token: token,
+        name: userMap['name']?.toString() ?? _lastAccountName,
+        email: userMap['email']?.toString() ?? _lastAccountEmail,
+      );
+    } catch (e) {
+      final clean = e.toString().replaceFirst('Exception: ', '');
+      _showError(
+        clean.contains('TimeoutException')
+            ? 'El servidor tardó demasiado en responder.'
+            : clean,
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -244,56 +381,19 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  Future<void> _loginWithGoogle() async {
-    final typedEmail = _emailCtrl.text.trim();
-    final emailToUse =
-        typedEmail.contains('@') ? typedEmail : 'cuenta.google@superia.app';
-    final nameToUse = _nameCtrl.text.trim().isNotEmpty
-        ? _nameCtrl.text.trim()
-        : emailToUse.split('@').first;
-
-    setState(() => _submitting = true);
-
-    try {
-      final result = await ApiService.googleQuickLogin(
-        name: nameToUse,
-        email: emailToUse,
-      );
-      final token = result['token']?.toString() ?? '';
-      final userMap = Map<String, dynamic>.from(
-        (result['user'] as Map?) ?? const {},
-      );
-
-      if (token.isEmpty) {
-        throw Exception('No se recibió token de sesión.');
-      }
-
-      await widget.onSuccess(
-        token: token,
-        name: userMap['name']?.toString() ?? nameToUse,
-        email: userMap['email']?.toString() ?? emailToUse,
-      );
-    } catch (e) {
-      final clean = e.toString().replaceFirst('Exception: ', '');
-      if (clean.contains('TimeoutException')) {
-        _showError(
-          'El servidor tardó demasiado en responder. Revisa tu URL de Render.',
-        );
-      } else if (clean.contains('Failed to fetch') ||
-          clean.contains('XMLHttpRequest')) {
-        _showError(
-          'No se pudo conectar con el servidor. Verifica la URL en api_service.dart.',
-        );
-      } else {
-        _showError(clean);
-      }
-    } finally {
-      if (mounted) setState(() => _submitting = false);
+  String _initialsFrom(String name, String email) {
+    final source = name.trim().isNotEmpty ? name.trim() : email.trim();
+    if (source.isEmpty) return 'IA';
+    final parts = source.split(RegExp(r'\s+'));
+    if (parts.length >= 2) {
+      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
     }
+    return source.substring(0, source.length >= 2 ? 2 : 1).toUpperCase();
   }
 
   @override
   void dispose() {
+    _googleSub?.cancel();
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
@@ -337,7 +437,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
                       color: panel,
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(24),
                       border: Border.all(color: blue.withOpacity(.55)),
                       boxShadow: [
                         BoxShadow(
@@ -349,130 +449,245 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.all_inclusive, size: 46, color: cyan),
-                        const SizedBox(height: 6),
+                        const Icon(Icons.all_inclusive, size: 52, color: cyan),
+                        const SizedBox(height: 8),
                         const Text(
                           'SuperIA',
                           style: TextStyle(
-                            fontSize: 28,
+                            fontSize: 30,
                             fontWeight: FontWeight.w800,
                           ),
                         ),
+                        const SizedBox(height: 4),
                         Text(
-                          _isRegister
-                              ? 'Crea tu cuenta para entrar'
-                              : 'Inicia sesión para entrar',
+                          _showEmailForm
+                              ? (_isRegister
+                                  ? 'Crea tu cuenta para entrar'
+                                  : 'Inicia sesión con tu correo')
+                              : 'Elige cómo quieres entrar',
                           style: const TextStyle(color: muted, fontSize: 13),
                         ),
-                        const SizedBox(height: 22),
-                        if (_isRegister) ...[
-                          TextField(
-                            controller: _nameCtrl,
-                            textInputAction: TextInputAction.next,
-                            decoration: const InputDecoration(
-                              labelText: 'Nombre',
-                              prefixIcon:
-                                  Icon(Icons.person_outline, color: cyan),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                        TextField(
-                          controller: _emailCtrl,
-                          keyboardType: TextInputType.emailAddress,
-                          textInputAction: TextInputAction.next,
-                          decoration: const InputDecoration(
-                            labelText: 'Correo electrónico',
-                            prefixIcon: Icon(Icons.email_outlined, color: cyan),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _passwordCtrl,
-                          obscureText: _obscurePassword,
-                          textInputAction: TextInputAction.done,
-                          onSubmitted: (_) => _submitting ? null : _submit(),
-                          decoration: InputDecoration(
-                            labelText: 'Contraseña',
-                            prefixIcon:
-                                const Icon(Icons.lock_outline, color: cyan),
-                            suffixIcon: IconButton(
-                              onPressed: () => setState(
-                                () => _obscurePassword = !_obscurePassword,
-                              ),
-                              icon: Icon(
-                                _obscurePassword
-                                    ? Icons.visibility_off
-                                    : Icons.visibility,
-                                color: muted,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 46,
-                          child: FilledButton(
-                            onPressed: _submitting ? null : _submit,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: blue,
-                              foregroundColor: Colors.white,
-                            ),
-                            child: _submitting
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2.4,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : Text(
-                                    _isRegister
-                                        ? 'Crear cuenta y entrar'
-                                        : 'Iniciar sesión',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
+                        const SizedBox(height: 24),
+                        if (!_showEmailForm) ...[
+                          if (_lastAccountEmail.isNotEmpty) ...[
+                            SizedBox(
+                              width: double.infinity,
+                              height: 58,
+                              child: ElevatedButton(
+                                onPressed: _submitting
+                                    ? null
+                                    : _continueWithSavedAccount,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF0E1D3D),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(30),
+                                    side: BorderSide(
+                                      color: cyan.withOpacity(.65),
                                     ),
                                   ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        if (!_isRegister) ...[
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 18,
+                                      backgroundColor: const Color(0xFF0A8F82),
+                                      child: Text(
+                                        _initialsFrom(
+                                          _lastAccountName,
+                                          _lastAccountEmail,
+                                        ),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'Continuar con esta cuenta',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                          Text(
+                                            _lastAccountEmail,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: muted,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                          ],
+                          if (kIsWeb)
+                            Center(
+                              child: _googleReady
+                                  ? web.renderButton(
+                                      configuration:
+                                          web.GSIButtonConfiguration(
+                                        shape: web.GSIButtonShape.pill,
+                                        size: web.GSIButtonSize.large,
+                                        text: web.GSIButtonText.continueWith,
+                                      ),
+                                    )
+                                  : const SizedBox(
+                                      height: 44,
+                                      child: Center(
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.2,
+                                        ),
+                                      ),
+                                    ),
+                            ),
+                          const SizedBox(height: 14),
                           SizedBox(
                             width: double.infinity,
-                            height: 44,
-                            child: OutlinedButton.icon(
-                              onPressed: _submitting ? null : _loginWithGoogle,
-                              icon: const Icon(
-                                Icons.g_mobiledata,
-                                size: 28,
-                                color: cyan,
+                            height: 50,
+                            child: OutlinedButton(
+                              onPressed: _submitting
+                                  ? null
+                                  : () => setState(() {
+                                        _showEmailForm = true;
+                                        _isRegister = false;
+                                      }),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                side: BorderSide(color: blue.withOpacity(.7)),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(30),
+                                ),
                               ),
-                              label: const Text(
-                                'Continuar con Google',
+                              child: const Text(
+                                'Inicia sesión de otra forma',
                                 style: TextStyle(
-                                  color: Colors.white,
                                   fontWeight: FontWeight.w600,
+                                  fontSize: 15,
                                 ),
                               ),
                             ),
                           ),
-                          const SizedBox(height: 8),
-                        ],
-                        TextButton(
-                          onPressed: _submitting
-                              ? null
-                              : () => setState(() => _isRegister = !_isRegister),
-                          child: Text(
-                            _isRegister
-                                ? '¿Ya tienes cuenta? Inicia sesión'
-                                : '¿No tienes cuenta? Regístrate aquí',
-                            style: const TextStyle(color: cyan),
+                        ] else ...[
+                          if (_isRegister) ...[
+                            TextField(
+                              controller: _nameCtrl,
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: 'Nombre',
+                                prefixIcon:
+                                    Icon(Icons.person_outline, color: cyan),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          TextField(
+                            controller: _emailCtrl,
+                            keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.next,
+                            decoration: const InputDecoration(
+                              labelText: 'Correo electrónico',
+                              prefixIcon:
+                                  Icon(Icons.email_outlined, color: cyan),
+                            ),
                           ),
-                        ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _passwordCtrl,
+                            obscureText: _obscurePassword,
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) => _submitting ? null : _submit(),
+                            decoration: InputDecoration(
+                              labelText: 'Contraseña',
+                              prefixIcon:
+                                  const Icon(Icons.lock_outline, color: cyan),
+                              suffixIcon: IconButton(
+                                onPressed: () => setState(
+                                  () => _obscurePassword = !_obscurePassword,
+                                ),
+                                icon: Icon(
+                                  _obscurePassword
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                  color: muted,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 46,
+                            child: FilledButton(
+                              onPressed: _submitting ? null : _submit,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: blue,
+                                foregroundColor: Colors.white,
+                              ),
+                              child: _submitting
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.4,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : Text(
+                                      _isRegister
+                                          ? 'Crear cuenta y entrar'
+                                          : 'Iniciar sesión',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextButton(
+                            onPressed: _submitting
+                                ? null
+                                : () => setState(
+                                    () => _isRegister = !_isRegister),
+                            child: Text(
+                              _isRegister
+                                  ? '¿Ya tienes cuenta? Inicia sesión'
+                                  : '¿No tienes cuenta? Regístrate aquí',
+                              style: const TextStyle(color: cyan),
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _submitting
+                                ? null
+                                : () => setState(() => _showEmailForm = false),
+                            icon: const Icon(Icons.arrow_back,
+                                size: 18, color: muted),
+                            label: const Text(
+                              'Volver a opciones de acceso',
+                              style: TextStyle(color: muted),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
