@@ -4,17 +4,21 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 class ApiService {
+  // Cambia esta URL por la de tu servicio real en Render (sin / al final)
   static const String baseUrl = 'https://TU-BACKEND.onrender.com';
+  static const Duration _timeout = Duration(seconds: 12);
 
   static Future<dynamic> login({
     required String email,
     required String password,
   }) async {
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/auth/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': email, 'password': password}),
-    );
+    final res = await http
+        .post(
+          Uri.parse('$baseUrl/api/auth/login'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email, 'password': password}),
+        )
+        .timeout(_timeout);
 
     final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -28,15 +32,36 @@ class ApiService {
     required String email,
     required String password,
   }) async {
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/auth/register'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'name': name, 'email': email, 'password': password}),
-    );
+    final res = await http
+        .post(
+          Uri.parse('$baseUrl/api/auth/register'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'name': name, 'email': email, 'password': password}),
+        )
+        .timeout(_timeout);
 
     final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(data['detail'] ?? 'Error al crear cuenta.');
+    }
+    return data;
+  }
+
+  static Future<dynamic> googleQuickLogin({
+    required String name,
+    required String email,
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse('$baseUrl/api/auth/google'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'name': name, 'email': email}),
+        )
+        .timeout(_timeout);
+
+    final data = jsonDecode(res.body);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception(data['detail'] ?? 'Error con cuenta de Google.');
     }
     return data;
   }
@@ -60,14 +85,16 @@ class ApiService {
       if (audioWav != null) 'audio_mime_type': 'audio/wav',
     };
 
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/chat'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $authToken',
-      },
-      body: jsonEncode(body),
-    );
+    final res = await http
+        .post(
+          Uri.parse('$baseUrl/api/chat'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $authToken',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 45));
 
     final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {

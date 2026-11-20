@@ -145,6 +145,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class GoogleLoginRequest(BaseModel):
+    name: str = Field(default="Usuario Google", max_length=80)
+    email: str = Field(min_length=5, max_length=150)
+
+
 class HistoryTurn(BaseModel):
     role: Literal["user", "model"]
     text: str = Field(max_length=20000)
@@ -234,6 +239,44 @@ def login(request: LoginRequest):
             "name": row["name"],
             "email": row["email"],
         },
+    }
+
+
+@app.post("/api/auth/google")
+def auth_google(request: GoogleLoginRequest):
+    email = request.email.strip().lower()
+    name = request.name.strip() or email.split("@")[0]
+
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Correo de Google inválido.")
+
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT id, name, email FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+
+        if row:
+            user_id = row["id"]
+            user_name = row["name"]
+        else:
+            now = int(time.time())
+            random_hash = _hash_password(os.urandom(24).hex())
+            cursor = conn.execute(
+                """
+                INSERT INTO users (name, email, password_hash, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (name, email, random_hash, now),
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+            user_name = name
+
+    token = _create_token(user_id=user_id, name=user_name, email=email)
+    return {
+        "token": token,
+        "user": {"id": user_id, "name": user_name, "email": email},
     }
 
 

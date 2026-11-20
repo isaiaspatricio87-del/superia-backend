@@ -227,8 +227,63 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } catch (e) {
       final clean = e.toString().replaceFirst('Exception: ', '');
-      if (clean.contains('Failed to fetch') || clean.contains('XMLHttpRequest')) {
-        _showError('No se pudo conectar con el servidor. Verifica la URL en api_service.dart.');
+      if (clean.contains('TimeoutException')) {
+        _showError(
+          'El servidor tardó demasiado en responder. Revisa tu URL de Render.',
+        );
+      } else if (clean.contains('Failed to fetch') ||
+          clean.contains('XMLHttpRequest')) {
+        _showError(
+          'No se pudo conectar con el servidor. Verifica la URL en api_service.dart.',
+        );
+      } else {
+        _showError(clean);
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _loginWithGoogle() async {
+    final typedEmail = _emailCtrl.text.trim();
+    final emailToUse =
+        typedEmail.contains('@') ? typedEmail : 'cuenta.google@superia.app';
+    final nameToUse = _nameCtrl.text.trim().isNotEmpty
+        ? _nameCtrl.text.trim()
+        : emailToUse.split('@').first;
+
+    setState(() => _submitting = true);
+
+    try {
+      final result = await ApiService.googleQuickLogin(
+        name: nameToUse,
+        email: emailToUse,
+      );
+      final token = result['token']?.toString() ?? '';
+      final userMap = Map<String, dynamic>.from(
+        (result['user'] as Map?) ?? const {},
+      );
+
+      if (token.isEmpty) {
+        throw Exception('No se recibió token de sesión.');
+      }
+
+      await widget.onSuccess(
+        token: token,
+        name: userMap['name']?.toString() ?? nameToUse,
+        email: userMap['email']?.toString() ?? emailToUse,
+      );
+    } catch (e) {
+      final clean = e.toString().replaceFirst('Exception: ', '');
+      if (clean.contains('TimeoutException')) {
+        _showError(
+          'El servidor tardó demasiado en responder. Revisa tu URL de Render.',
+        );
+      } else if (clean.contains('Failed to fetch') ||
+          clean.contains('XMLHttpRequest')) {
+        _showError(
+          'No se pudo conectar con el servidor. Verifica la URL en api_service.dart.',
+        );
       } else {
         _showError(clean);
       }
@@ -385,6 +440,28 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                         const SizedBox(height: 12),
+                        if (!_isRegister) ...[
+                          SizedBox(
+                            width: double.infinity,
+                            height: 44,
+                            child: OutlinedButton.icon(
+                              onPressed: _submitting ? null : _loginWithGoogle,
+                              icon: const Icon(
+                                Icons.g_mobiledata,
+                                size: 28,
+                                color: cyan,
+                              ),
+                              label: const Text(
+                                'Continuar con Google',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         TextButton(
                           onPressed: _submitting
                               ? null
