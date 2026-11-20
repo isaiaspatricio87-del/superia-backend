@@ -29,7 +29,7 @@ OPENROUTER_ONLINE_MODEL = os.getenv(
 )
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_AUDIO_MODEL = os.getenv("GEMINI_AUDIO_MODEL", "gemini-2.5-flash").strip()
+GEMINI_AUDIO_MODEL = os.getenv("GEMINI_AUDIO_MODEL", "gemini-3.8-flash").strip()
 
 
 app = FastAPI(title="SuperIA Backend")
@@ -339,50 +339,71 @@ def _call_gemini_audio(
     )
     contents.append({"role": "user", "parts": user_parts})
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_AUDIO_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    )
+    models_to_try: list[str] = []
+    for candidate in (
+        GEMINI_AUDIO_MODEL,
+        "gemini-3.8-flash",
+        "gemini-2.0-flash",
+    ):
+        if candidate and candidate not in models_to_try:
+            models_to_try.append(candidate)
+
     body = {
         "system_instruction": {"parts": [{"text": system_instruction}]},
         "contents": contents,
     }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
 
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as http_err:
-        err_body = http_err.read().decode("utf-8", errors="replace")
-        print(
-            f"Error HTTP Gemini Audio ({http_err.code}): {err_body}",
-            flush=True,
+    last_error = "Gemini devolvió un error al procesar el audio."
+    data: dict | None = None
+
+    for model_name in models_to_try:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent?key={GEMINI_API_KEY}"
         )
-        if http_err.code in (400, 401, 403):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as http_err:
+            err_body = http_err.read().decode("utf-8", errors="replace")
+            print(
+                f"Error HTTP Gemini Audio ({model_name} - {http_err.code}): {err_body}",
+                flush=True,
+            )
+            if http_err.code == 404:
+                last_error = f"Modelo {model_name} no disponible (404)."
+                continue
+            if http_err.code in (400, 401, 403):
+                raise HTTPException(
+                    status_code=502,
+                    detail="Revisa GEMINI_API_KEY en Render.",
+                )
+            if http_err.code == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Límite de peticiones alcanzado en Gemini. Intenta en unos segundos.",
+                )
             raise HTTPException(
                 status_code=502,
-                detail="Revisa GEMINI_API_KEY o GEMINI_AUDIO_MODEL en Render.",
+                detail="Gemini devolvió un error al procesar el audio.",
             )
-        if http_err.code == 429:
+        except Exception as err:
+            print(f"Error de red con Gemini Audio: {err}", flush=True)
             raise HTTPException(
-                status_code=429,
-                detail="Límite de peticiones alcanzado en Gemini. Intenta en unos segundos.",
+                status_code=502,
+                detail="No se pudo conectar con Gemini para procesar el audio.",
             )
-        raise HTTPException(
-            status_code=502,
-            detail="Gemini devolvió un error al procesar el audio.",
-        )
-    except Exception as err:
-        print(f"Error de red con Gemini Audio: {err}", flush=True)
-        raise HTTPException(
-            status_code=502,
-            detail="No se pudo conectar con Gemini para procesar el audio.",
-        )
+
+    if data is None:
+        raise HTTPException(status_code=502, detail=last_error)
 
     candidates = data.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts")) if candidates else []
