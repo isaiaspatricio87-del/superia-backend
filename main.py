@@ -1,4 +1,5 @@
 import base64
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -6,11 +7,12 @@ import os
 import sqlite3
 import time
 from typing import Literal
+import urllib.error
+import urllib.request
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +20,13 @@ DB_PATH = os.getenv("AUTH_DB_PATH", "superia_users.db")
 AUTH_SECRET = os.getenv("AUTH_SECRET_KEY", "superia-secret-key-isaias-2026")
 ADMIN_KEY = os.getenv("ADMIN_KEY", "isaias-admin-2026")
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 días
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini:online")
+OPENROUTER_AUDIO_MODEL = os.getenv(
+    "OPENROUTER_AUDIO_MODEL",
+    "google/gemini-2.5-flash:online",
+)
 
 
 app = FastAPI(title="SuperIA Backend")
@@ -134,6 +143,74 @@ def _require_user(authorization: str | None) -> dict:
     return _verify_token(token)
 
 
+def _audio_format_from_mime(mime_type: str | None) -> str:
+    if not mime_type:
+        return "wav"
+    lowered = mime_type.lower()
+    if "mp3" in lowered or "mpeg" in lowered:
+        return "mp3"
+    if "ogg" in lowered:
+        return "ogg"
+    if "webm" in lowered:
+        return "webm"
+    if "m4a" in lowered or "mp4" in lowered or "aac" in lowered:
+        return "m4a"
+    return "wav"
+
+
+def _call_openrouter(api_key: str, model: str, messages: list[dict]) -> dict:
+    body = {
+        "model": model,
+        "messages": messages,
+    }
+    req = urllib.request.Request(
+        OPENROUTER_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://superia-backend-1.onrender.com",
+            "X-Title": "SuperIA",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as http_err:
+        err_body = http_err.read().decode("utf-8", errors="replace")
+        print(
+            f"Error HTTP OpenRouter ({http_err.code}): {err_body}",
+            flush=True,
+        )
+        if http_err.code == 401:
+            raise HTTPException(
+                status_code=401,
+                detail="OPENROUTER_API_KEY inválida o revocada en Render.",
+            )
+        if http_err.code == 402:
+            raise HTTPException(
+                status_code=402,
+                detail="OpenRouter no tiene créditos disponibles para esta consulta.",
+            )
+        if http_err.code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Límite de peticiones alcanzado en OpenRouter. Intenta en unos segundos.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="OpenRouter devolvió un error. Revisa los logs de Render.",
+        )
+    except Exception as err:
+        print(f"Error de red con OpenRouter: {err}", flush=True)
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo conectar con OpenRouter. Revisa los logs de Render.",
+        )
+
+
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     email: str = Field(min_length=5, max_length=150)
@@ -167,7 +244,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "SuperIA activo"}
+    return {"status": "SuperIA activo", "provider": "OpenRouter"}
 
 
 @app.get("/health")
@@ -317,172 +394,150 @@ def chat(
     authorization: str | None = Header(default=None),
 ):
     current_user = _require_user(authorization)
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY")
 
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="Falta configurar GEMINI_API_KEY en Render.",
+            detail="Falta configurar OPENROUTER_API_KEY en Render.",
         )
 
-    try:
-        client = genai.Client(api_key=api_key)
+    now_rd = datetime.now(ZoneInfo("America/Santo_Domingo"))
+    fecha_hora_actual = now_rd.strftime("%A, %d/%m/%Y a las %I:%M:%S %p (Hora de República Dominicana, AST)")
 
-        system_instruction = (
-            "Eres SuperIA, una inteligencia artificial amigable, cercana, "
-            "respetuosa y eficaz. Responde con naturalidad y calidez, en el "
-            "idioma del usuario. "
-            f"El usuario autenticado se llama {current_user['name']}. "
-            "Tu creador y desarrollador es Isaías Patricio Agramonte. "
-            "Si te preguntan quién te creó, quién te desarrolló, quién es "
-            "tu creador, quién hizo SuperIA o cualquier pregunta equivalente "
-            "sobre el origen de SuperIA, responde claramente que fue creada "
-            "por Isaías Patricio Agramonte. No atribuyas la creación de "
-            "SuperIA a Google ni a otra persona o empresa. Google proporciona "
-            "el modelo de inteligencia artificial que usa SuperIA. "
-            "Mantén el tema de la conversación. Si el usuario dice «dame más "
-            "detalle», «explícame eso» o algo parecido, continúa el tema "
-            "anterior con un tono conversacional; no le preguntes de nuevo "
-            "cuál era el tema. "
-            "TIENES ACCESO A INTERNET EN TIEMPO REAL: Cuando el usuario pregunte "
-            "por la hora actual, el día de hoy, el estado del tiempo meteorológico "
-            "(si está nublado, soleado, lloviendo, temperatura, etc.) o sobre "
-            "resultados y noticias recientes de CUALQUIER DEPORTE en el mundo, "
-            "DEBES usar Google Search obligatoriamente para investigar la información "
-            "más fresca y reciente en la web. No inventes datos ni fuentes; "
-            "si no puedes verificar algo, dilo. Usa Markdown estándar para "
-            "títulos, listas y **negritas**."
+    system_instruction = (
+        "Eres SuperIA, una inteligencia artificial amigable, cercana, "
+        "respetuosa y eficaz. Responde con naturalidad y calidez, en el "
+        "idioma del usuario. "
+        f"El usuario autenticado se llama {current_user['name']}. "
+        f"FECHA Y HORA ACTUAL EXACTA: {fecha_hora_actual}. "
+        "Si el usuario pregunta qué hora es o qué día es hoy, responde usando "
+        "esa fecha y hora exacta. "
+        "Tu creador y desarrollador es Isaías Patricio Agramonte. "
+        "Si te preguntan quién te creó, quién te desarrolló, quién es "
+        "tu creador, quién hizo SuperIA o cualquier pregunta equivalente "
+        "sobre el origen de SuperIA, responde claramente que fue creada "
+        "por Isaías Patricio Agramonte. No atribuyas la creación de "
+        "SuperIA a OpenAI, Google ni a otra persona o empresa. "
+        "Mantén el tema de la conversación. Si el usuario dice «dame más "
+        "detalle», «explícame eso» o algo parecido, continúa el tema "
+        "anterior con un tono conversacional; no le preguntes de nuevo "
+        "cuál era el tema. "
+        "TIENES ACCESO A BÚSQUEDA WEB EN TIEMPO REAL: Cuando el usuario pregunte "
+        "por el estado del tiempo meteorológico (si está nublado, soleado, "
+        "lloviendo, temperatura, etc.) o sobre resultados, partidos y noticias "
+        "recientes de CUALQUIER DEPORTE en el mundo, investiga la información "
+        "más fresca y reciente en la web. No inventes datos ni fuentes; "
+        "si no puedes verificar algo, dilo. Usa Markdown estándar para "
+        "títulos, listas y **negritas**."
+    )
+
+    messages: list[dict] = [{"role": "system", "content": system_instruction}]
+
+    for turn in request.history[-12:]:
+        if turn.text.strip():
+            role = "assistant" if turn.role == "model" else "user"
+            messages.append({"role": role, "content": turn.text.strip()})
+
+    user_content: list[dict] = []
+
+    if request.memories:
+        memories_text = "\n".join(f"- {memory}" for memory in request.memories)
+        user_content.append(
+            {
+                "type": "text",
+                "text": f"Notas que el usuario guardó:\n{memories_text}",
+            }
         )
 
-        conversation = [
-            types.Content(
-                role=turn.role,
-                parts=[types.Part.from_text(text=turn.text)],
-            )
-            for turn in request.history[-12:]
-            if turn.text.strip()
-        ]
-
-        current_parts: list[types.Part] = []
-
-        if request.memories:
-            memories_text = "\n".join(
-                f"- {memory}" for memory in request.memories
-            )
-            current_parts.append(
-                types.Part.from_text(
-                    text=f"Notas que el usuario guardó:\n{memories_text}"
-                )
-            )
-
-        if request.message.strip():
-            current_parts.append(
-                types.Part.from_text(text=request.message.strip())
-            )
-
-        if request.image_base64:
-            try:
-                image_bytes = base64.b64decode(
-                    request.image_base64,
-                    validate=True,
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code=400,
-                    detail="La imagen recibida no es válida.",
-                )
-
-            current_parts.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=request.image_mime_type or "image/jpeg",
-                )
-            )
-
-        if request.audio_base64:
-            try:
-                audio_bytes = base64.b64decode(
-                    request.audio_base64,
-                    validate=True,
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code=400,
-                    detail="El audio recibido no es válido.",
-                )
-
-            current_parts.append(
-                types.Part.from_bytes(
-                    data=audio_bytes,
-                    mime_type=request.audio_mime_type or "audio/wav",
-                )
-            )
-
-        if not current_parts:
-            current_parts.append(types.Part.from_text(text="¡Hola!"))
-
-        conversation.append(
-            types.Content(role="user", parts=current_parts)
+    if request.message.strip():
+        user_content.append(
+            {
+                "type": "text",
+                "text": request.message.strip(),
+            }
         )
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=conversation,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                tools=[
-                    types.Tool(
-                        google_search=types.GoogleSearch()
-                    )
-                ],
-            ),
-        )
-
-        reply = response.text
-
-        if not reply or not reply.strip():
-            reply = "No pude generar una respuesta. Inténtalo de nuevo."
-
-        source_links = []
-        seen_urls = set()
-
-        for candidate in response.candidates or []:
-            metadata = getattr(candidate, "grounding_metadata", None)
-
-            for chunk in getattr(metadata, "grounding_chunks", []) or []:
-                web = getattr(chunk, "web", None)
-                url = getattr(web, "uri", None) if web else None
-                title = getattr(web, "title", None) if web else None
-
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    label = title or url
-                    source_links.append(f"- [{label}]({url})")
-
-        if source_links:
-            reply += "\n\n**Fuentes:**\n" + "\n".join(source_links)
-
-        return {"reply": reply}
-
-    except HTTPException:
-        raise
-    except Exception as error:
-        error_text = str(error)
-        print(f"Error al consultar Gemini: {error_text}", flush=True)
-
-        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text.upper():
+    if request.image_base64:
+        try:
+            base64.b64decode(request.image_base64, validate=True)
+        except Exception:
             raise HTTPException(
-                status_code=429,
-                detail=(
-                    "Gemini agotó la cuota disponible para este proyecto. "
-                    "Revisa los límites de uso y la facturación en Google AI Studio."
-                ),
+                status_code=400,
+                detail="La imagen recibida no es válida.",
             )
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "No se pudo obtener respuesta de Gemini. "
-                "Revisa los logs de Render."
-            ),
+        mime = request.image_mime_type or "image/jpeg"
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime};base64,{request.image_base64}",
+                },
+            }
         )
+
+    selected_model = OPENROUTER_MODEL
+
+    if request.audio_base64:
+        try:
+            base64.b64decode(request.audio_base64, validate=True)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="El audio recibido no es válido.",
+            )
+        audio_fmt = _audio_format_from_mime(request.audio_mime_type)
+        user_content.append(
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": request.audio_base64,
+                    "format": audio_fmt,
+                },
+            }
+        )
+        selected_model = OPENROUTER_AUDIO_MODEL
+
+    if not user_content:
+        user_content.append({"type": "text", "text": "¡Hola!"})
+
+    if len(user_content) == 1 and user_content[0]["type"] == "text":
+        messages.append({"role": "user", "content": user_content[0]["text"]})
+    else:
+        messages.append({"role": "user", "content": user_content})
+
+    data = _call_openrouter(
+        api_key=api_key,
+        model=selected_model,
+        messages=messages,
+    )
+
+    choices = data.get("choices") or []
+    message_obj = choices[0].get("message", {}) if choices else {}
+    reply = message_obj.get("content") or ""
+
+    if isinstance(reply, list):
+        reply = "\n".join(
+            part.get("text", "")
+            for part in reply
+            if isinstance(part, dict) and part.get("text")
+        )
+
+    if not reply or not reply.strip():
+        reply = "No pude generar una respuesta. Inténtalo de nuevo."
+
+    source_links = []
+    seen_urls = set()
+    for annotation in message_obj.get("annotations") or []:
+        url_citation = annotation.get("url_citation") or {}
+        url = url_citation.get("url")
+        title = url_citation.get("title")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            label = title or url
+            source_links.append(f"- [{label}]({url})")
+
+    if source_links:
+        reply += "\n\n**Fuentes:**\n" + "\n".join(source_links)
+
+    return {"reply": reply}
