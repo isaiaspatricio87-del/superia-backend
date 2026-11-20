@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 class ApiService {
   // Cambia esta URL por la de tu servicio real en Render (sin / al final)
   static const String baseUrl = 'https://superia-backend-1.onrender.com';
-  static const Duration _timeout = Duration(seconds: 12);
+  static const Duration _timeout = Duration(seconds: 15);
 
   static Future<dynamic> login({
     required String email,
@@ -85,6 +85,9 @@ class ApiService {
       if (audioWav != null) 'audio_mime_type': 'audio/wav',
     };
 
+    final requestTimeout =
+        audioWav != null ? const Duration(seconds: 120) : const Duration(seconds: 60);
+
     final res = await http
         .post(
           Uri.parse('$baseUrl/api/chat'),
@@ -94,7 +97,7 @@ class ApiService {
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 45));
+        .timeout(requestTimeout);
 
     final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {

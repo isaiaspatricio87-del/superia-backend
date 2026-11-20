@@ -902,6 +902,7 @@ class ChatItem {
     this.imageNames = const [],
     this.isVoice = false,
     this.voiceDurationSeconds = 0,
+    this.audioBase64,
   });
 
   final bool user;
@@ -913,6 +914,7 @@ class ChatItem {
   final List<String> imageNames;
   final bool isVoice;
   final int voiceDurationSeconds;
+  final String? audioBase64;
 
   List<String> get allImagesBase64 {
     if (imagesBase64.isNotEmpty) return imagesBase64;
@@ -936,6 +938,7 @@ class ChatItem {
         'imageNames': imageNames,
         'isVoice': isVoice,
         'voiceDurationSeconds': voiceDurationSeconds,
+        'audioBase64': audioBase64,
       };
 
   factory ChatItem.fromJson(Map<String, dynamic> json) {
@@ -962,6 +965,132 @@ class ChatItem {
       isVoice: json['isVoice'] == true,
       voiceDurationSeconds:
           (json['voiceDurationSeconds'] as num?)?.toInt() ?? 0,
+      audioBase64: json['audioBase64']?.toString(),
+    );
+  }
+}
+
+class WhatsAppVoiceBubble extends StatefulWidget {
+  const WhatsAppVoiceBubble({
+    super.key,
+    required this.durationSeconds,
+    this.audioBase64,
+  });
+
+  final int durationSeconds;
+  final String? audioBase64;
+
+  @override
+  State<WhatsAppVoiceBubble> createState() => _WhatsAppVoiceBubbleState();
+}
+
+class _WhatsAppVoiceBubbleState extends State<WhatsAppVoiceBubble> {
+  Timer? _playTimer;
+  bool _playing = false;
+  int _elapsedSeconds = 0;
+
+  int get _totalSeconds =>
+      widget.durationSeconds <= 0 ? 1 : widget.durationSeconds;
+
+  String _fmt(int sec) {
+    final m = sec ~/ 60;
+    final s = sec % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  void _togglePlay() {
+    if (_playing) {
+      _playTimer?.cancel();
+      setState(() => _playing = false);
+      return;
+    }
+
+    setState(() {
+      if (_elapsedSeconds >= _totalSeconds) {
+        _elapsedSeconds = 0;
+      }
+      _playing = true;
+    });
+
+    _playTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _elapsedSeconds++;
+        if (_elapsedSeconds >= _totalSeconds) {
+          _elapsedSeconds = _totalSeconds;
+          _playing = false;
+          timer.cancel();
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _playTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = (_elapsedSeconds / _totalSeconds).clamp(0.0, 1.0);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        InkWell(
+          onTap: _togglePlay,
+          borderRadius: BorderRadius.circular(20),
+          child: Container(
+            width: 34,
+            height: 34,
+            decoration: const BoxDecoration(
+              color: cyan,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              color: const Color(0xFF040B1C),
+              size: 22,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 120,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 5,
+                  backgroundColor: Colors.white24,
+                  valueColor: const AlwaysStoppedAnimation<Color>(cyan),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _playing
+                    ? '${_fmt(_elapsedSeconds)} / ${_fmt(_totalSeconds)}'
+                    : _fmt(_totalSeconds),
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 6),
+        const Icon(Icons.mic, color: cyan, size: 18),
+      ],
     );
   }
 }
@@ -1823,6 +1952,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     List<String> imageNames = const [],
     bool isVoice = false,
     int voiceDurationSeconds = 0,
+    String? audioBase64,
     String? hintTitle,
   }) async {
     setState(() {
@@ -1837,6 +1967,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           imageNames: imageNames,
           isVoice: isVoice,
           voiceDurationSeconds: voiceDurationSeconds,
+          audioBase64: audioBase64,
         ),
       );
     });
@@ -2413,6 +2544,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (_loading) return;
 
     final history = _conversationHistory();
+    final wavB64 = base64Encode(wav);
     setState(() => _loading = true);
 
     try {
@@ -2421,15 +2553,36 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         'Nota de voz · ${_formatDuration(seconds)}',
         isVoice: true,
         voiceDurationSeconds: seconds,
+        audioBase64: wavB64,
       );
 
-      final reply = await ApiService.sendMessage(
-        authToken: widget.authToken,
-        message: '',
-        memories: _memories,
-        history: history,
-        audioWav: wav,
+      final completer = Completer<String>();
+      _currentRequestSubscription = Stream.fromFuture(
+        ApiService.sendMessage(
+          authToken: widget.authToken,
+          message: '',
+          memories: _memories,
+          history: history,
+          audioWav: wav,
+        ),
+      ).listen(
+        (res) {
+          if (!completer.isCompleted) completer.complete(res);
+        },
+        onError: (err) {
+          if (!completer.isCompleted) completer.completeError(err);
+        },
       );
+
+      final reply = await Future.any<String>([
+        completer.future,
+        Future<String>.delayed(
+          const Duration(seconds: 120),
+          () => throw TimeoutException(
+            'El servidor tardó más de 120 segundos en responder al audio.',
+          ),
+        ),
+      ]);
 
       if (!mounted) return;
 
@@ -2443,7 +2596,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         );
       }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _currentRequestSubscription = null;
+        });
+      }
     }
   }
 
@@ -3276,16 +3434,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (item.isVoice)
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.graphic_eq, color: cyan),
-                const SizedBox(width: 7),
-                Text(
-                  'Nota de voz · '
-                  '${_formatDuration(item.voiceDurationSeconds)}',
-                ),
-              ],
+            WhatsAppVoiceBubble(
+              durationSeconds: item.voiceDurationSeconds,
+              audioBase64: item.audioBase64,
             ),
           if (images.isNotEmpty) ...[
             Wrap(
