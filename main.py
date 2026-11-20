@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 DB_PATH = os.getenv("AUTH_DB_PATH", "superia_users.db")
 AUTH_SECRET = os.getenv("AUTH_SECRET_KEY", "superia-secret-key-isaias-2026")
+ADMIN_KEY = os.getenv("ADMIN_KEY", "isaias-admin-2026")
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 días
 
 
@@ -245,6 +246,25 @@ def me(authorization: str | None = Header(default=None)):
             "name": payload["name"],
             "email": payload["email"],
         }
+    }
+
+
+@app.get("/api/admin/users")
+def list_users(admin_key: str = ""):
+    if admin_key != ADMIN_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Clave de administrador incorrecta.",
+        )
+
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, name, email, created_at FROM users ORDER BY id DESC"
+        ).fetchall()
+
+    return {
+        "total": len(rows),
+        "users": [dict(row) for row in rows],
     }
 
 

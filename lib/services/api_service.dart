@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 class ApiService {
   static const String baseUrl = 'https://TU-BACKEND.onrender.com';
 
-  static Future> login({
+  static Future<dynamic> login({
     required String email,
     required String password,
   }) async {
@@ -16,14 +16,14 @@ class ApiService {
       body: jsonEncode({'email': email, 'password': password}),
     );
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(data['detail'] ?? 'Error al iniciar sesión.');
     }
     return data;
   }
 
-  static Future> register({
+  static Future<dynamic> register({
     required String name,
     required String email,
     required String password,
@@ -34,7 +34,7 @@ class ApiService {
       body: jsonEncode({'name': name, 'email': email, 'password': password}),
     );
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(data['detail'] ?? 'Error al crear cuenta.');
     }
@@ -45,7 +45,7 @@ class ApiService {
     required String authToken,
     required String message,
     required List<String> memories,
-    required List> history,
+    required List<dynamic> history,
     Uint8List? image,
     String? imageMimeType,
     Uint8List? audioWav,
@@ -69,7 +69,7 @@ class ApiService {
       body: jsonEncode(body),
     );
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = jsonDecode(res.body);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(data['detail'] ?? 'Error en el servidor.');
     }

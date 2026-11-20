@@ -37,7 +37,12 @@ class SuperIAApp extends StatelessWidget {
         ),
         useMaterial3: true,
         snackBarTheme: const SnackBarThemeData(
-          backgroundColor: Color(0xFF10254A),
+          backgroundColor: Color(0xFF0A244D),
+          contentTextStyle: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       ),
@@ -162,7 +167,14 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg)));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            msg,
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
   }
 
   Future<void> _submit() async {
@@ -214,7 +226,12 @@ class _LoginScreenState extends State<LoginScreen> {
         email: resolvedEmail,
       );
     } catch (e) {
-      _showError(e.toString().replaceFirst('Exception: ', ''));
+      final clean = e.toString().replaceFirst('Exception: ', '');
+      if (clean.contains('Failed to fetch') || clean.contains('XMLHttpRequest')) {
+        _showError('No se pudo conectar con el servidor. Verifica la URL en api_service.dart.');
+      } else {
+        _showError(clean);
+      }
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
@@ -589,7 +606,10 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(text),
+          content: Text(
+            text,
+            style: const TextStyle(color: Colors.white),
+          ),
           duration: const Duration(seconds: 3),
         ),
       );
@@ -634,7 +654,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     });
   }
 
-  List> _conversationHistory() {
+  List<dynamic> _conversationHistory() {
     final previous =
         _messages.where((item) => item.text.trim().isNotEmpty).toList();
 
