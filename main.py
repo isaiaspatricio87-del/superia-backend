@@ -27,10 +27,9 @@ OPENROUTER_ONLINE_MODEL = os.getenv(
     "OPENROUTER_ONLINE_MODEL",
     "openai/gpt-4o-mini:online",
 )
-OPENROUTER_AUDIO_MODEL = os.getenv(
-    "OPENROUTER_AUDIO_MODEL",
-    "google/gemini-2.5-flash:online",
-)
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_AUDIO_MODEL = os.getenv("GEMINI_AUDIO_MODEL", "gemini-2.5-flash").strip()
 
 
 app = FastAPI(title="SuperIA Backend")
@@ -147,19 +146,23 @@ def _require_user(authorization: str | None) -> dict:
     return _verify_token(token)
 
 
-def _audio_format_from_mime(mime_type: str | None) -> str:
+def _audio_mime_from_input(mime_type: str | None) -> str:
     if not mime_type:
-        return "wav"
-    lowered = mime_type.lower()
-    if "mp3" in lowered or "mpeg" in lowered:
-        return "mp3"
-    if "ogg" in lowered:
-        return "ogg"
-    if "webm" in lowered:
-        return "webm"
-    if "m4a" in lowered or "mp4" in lowered or "aac" in lowered:
-        return "m4a"
-    return "wav"
+        return "audio/wav"
+    cleaned = mime_type.strip().lower()
+    if "/" in cleaned:
+        return cleaned
+    mapping = {
+        "wav": "audio/wav",
+        "mp3": "audio/mp3",
+        "mpeg": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "webm": "audio/webm",
+        "m4a": "audio/mp4",
+        "mp4": "audio/mp4",
+        "aac": "audio/aac",
+    }
+    return mapping.get(cleaned, "audio/wav")
 
 
 def _is_followup_detail_request(text: str) -> bool:
@@ -235,6 +238,161 @@ def _needs_live_search(text: str, history: list["HistoryTurn"]) -> bool:
         "busca",
     )
     return any(word in lowered for word in keywords)
+
+
+def _build_system_instruction(user_name: str) -> str:
+    now_rd = datetime.now(ZoneInfo("America/Santo_Domingo"))
+    fecha_hora_actual = now_rd.strftime(
+        "%A, %d/%m/%Y a las %I:%M:%S %p (Hora de República Dominicana, AST)"
+    )
+
+    return (
+        "Eres SuperIA, una inteligencia artificial amigable, cercana, "
+        "respetuosa y eficaz. Responde con naturalidad, limpieza y calidez, "
+        "en el idioma del usuario, sin agregar listas de enlaces o fuentes "
+        "al final a menos que el usuario pida explícitamente enlaces o "
+        "fuentes. "
+        f"El usuario autenticado se llama {user_name}. "
+        f"FECHA Y HORA ACTUAL EXACTA: {fecha_hora_actual}. "
+        "Si el usuario pregunta qué hora es o qué día es hoy, responde usando "
+        "esa fecha y hora exacta. "
+        "Tu creador y desarrollador es Isaías Patricio Agramonte. "
+        "Si te preguntan quién te creó, quién te desarrolló, quién es "
+        "tu creador, quién hizo SuperIA o cualquier pregunta equivalente "
+        "sobre el origen de SuperIA, responde claramente que fue creada "
+        "por Isaías Patricio Agramonte. No atribuyas la creación de "
+        "SuperIA a OpenAI, Google ni a otra persona o empresa. "
+        "REGLA DE CONTINUIDAD: Cuando el usuario pida «más detalle», "
+        "«más información», «explícame eso» o algo similar, SIEMPRE "
+        "continúa y amplía directamente el tema o la última respuesta de la "
+        "conversación anterior (por ejemplo, si antes hablaron de la fecha/día "
+        "de hoy, da detalles útiles sobre el día, calendario, temporada o lo "
+        "que corresponda a ese tema). NUNCA respondas preguntando «¿Sobre qué "
+        "tema específico te gustaría que te diera más detalle?» ni digas que "
+        "necesitas contexto cuando ya hay un tema en el historial. "
+        "Cuando el usuario pregunte por el estado del tiempo meteorológico "
+        "(si está nublado, soleado, lloviendo, temperatura, etc.) o sobre "
+        "resultados, partidos y noticias recientes de CUALQUIER DEPORTE en el "
+        "mundo, responde con la información más fresca y actual disponible. "
+        "Usa Markdown estándar para títulos, listas y **negritas**."
+    )
+
+
+def _call_gemini_audio(
+    audio_base64: str,
+    audio_mime_type: str | None,
+    prompt_text: str,
+    memories: list[str],
+    history: list["HistoryTurn"],
+    system_instruction: str,
+) -> str:
+    if not GEMINI_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta configurar GEMINI_API_KEY en Render para procesar audios.",
+        )
+
+    clean_b64 = audio_base64.split(",")[-1].strip()
+    try:
+        base64.b64decode(clean_b64, validate=True)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="El audio recibido no es válido.",
+        )
+
+    mime = _audio_mime_from_input(audio_mime_type)
+    contents: list[dict] = []
+
+    for turn in history[-14:]:
+        if turn.text.strip():
+            role = "model" if turn.role == "model" else "user"
+            contents.append(
+                {
+                    "role": role,
+                    "parts": [{"text": turn.text.strip()}],
+                }
+            )
+
+    user_parts: list[dict] = []
+    if memories:
+        memories_text = "\n".join(f"- {memory}" for memory in memories)
+        user_parts.append(
+            {
+                "text": f"Notas que el usuario guardó:\n{memories_text}",
+            }
+        )
+
+    user_parts.append(
+        {
+            "inline_data": {
+                "mime_type": mime,
+                "data": clean_b64,
+            }
+        }
+    )
+    user_parts.append(
+        {
+            "text": prompt_text.strip()
+            or "Escucha esta nota de voz y responde de forma clara y útil a lo que diga o pida el usuario.",
+        }
+    )
+    contents.append({"role": "user", "parts": user_parts})
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_AUDIO_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    )
+    body = {
+        "system_instruction": {"parts": [{"text": system_instruction}]},
+        "contents": contents,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as http_err:
+        err_body = http_err.read().decode("utf-8", errors="replace")
+        print(
+            f"Error HTTP Gemini Audio ({http_err.code}): {err_body}",
+            flush=True,
+        )
+        if http_err.code in (400, 401, 403):
+            raise HTTPException(
+                status_code=502,
+                detail="Revisa GEMINI_API_KEY o GEMINI_AUDIO_MODEL en Render.",
+            )
+        if http_err.code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Límite de peticiones alcanzado en Gemini. Intenta en unos segundos.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini devolvió un error al procesar el audio.",
+        )
+    except Exception as err:
+        print(f"Error de red con Gemini Audio: {err}", flush=True)
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo conectar con Gemini para procesar el audio.",
+        )
+
+    candidates = data.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts")) if candidates else []
+    reply = "".join(
+        part.get("text", "")
+        for part in (parts or [])
+        if isinstance(part, dict) and part.get("text")
+    ).strip()
+
+    return reply or "Escuché el audio, pero no pude generar una respuesta."
 
 
 def _call_openrouter(api_key: str, model: str, messages: list[dict]) -> dict:
@@ -323,7 +481,10 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "SuperIA activo", "provider": "OpenRouter"}
+    return {
+        "status": "SuperIA activo",
+        "provider": "OpenRouter + Gemini Audio",
+    }
 
 
 @app.get("/health")
@@ -473,49 +634,33 @@ def chat(
     authorization: str | None = Header(default=None),
 ):
     current_user = _require_user(authorization)
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    system_instruction = _build_system_instruction(current_user["name"])
 
+    msg_text = request.message.strip()
+    if _is_followup_detail_request(msg_text):
+        msg_text = (
+            f"{msg_text} (Amplía y da más detalles directamente sobre el "
+            "último tema tratado en esta conversación, sin preguntar de qué "
+            "tema se trata)."
+        )
+
+    if request.audio_base64:
+        reply = _call_gemini_audio(
+            audio_base64=request.audio_base64,
+            audio_mime_type=request.audio_mime_type,
+            prompt_text=msg_text,
+            memories=request.memories,
+            history=request.history,
+            system_instruction=system_instruction,
+        )
+        return {"reply": reply}
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=500,
             detail="Falta configurar OPENROUTER_API_KEY en Render.",
         )
-
-    now_rd = datetime.now(ZoneInfo("America/Santo_Domingo"))
-    fecha_hora_actual = now_rd.strftime(
-        "%A, %d/%m/%Y a las %I:%M:%S %p (Hora de República Dominicana, AST)"
-    )
-
-    system_instruction = (
-        "Eres SuperIA, una inteligencia artificial amigable, cercana, "
-        "respetuosa y eficaz. Responde con naturalidad, limpieza y calidez, "
-        "en el idioma del usuario, sin agregar listas de enlaces o fuentes "
-        "al final a menos que el usuario pida explícitamente enlaces o "
-        "fuentes. "
-        f"El usuario autenticado se llama {current_user['name']}. "
-        f"FECHA Y HORA ACTUAL EXACTA: {fecha_hora_actual}. "
-        "Si el usuario pregunta qué hora es o qué día es hoy, responde usando "
-        "esa fecha y hora exacta. "
-        "Tu creador y desarrollador es Isaías Patricio Agramonte. "
-        "Si te preguntan quién te creó, quién te desarrolló, quién es "
-        "tu creador, quién hizo SuperIA o cualquier pregunta equivalente "
-        "sobre el origen de SuperIA, responde claramente que fue creada "
-        "por Isaías Patricio Agramonte. No atribuyas la creación de "
-        "SuperIA a OpenAI, Google ni a otra persona o empresa. "
-        "REGLA DE CONTINUIDAD: Cuando el usuario pida «más detalle», "
-        "«más información», «explícame eso» o algo similar, SIEMPRE "
-        "continúa y amplía directamente el tema o la última respuesta de la "
-        "conversación anterior (por ejemplo, si antes hablaron de la fecha/día "
-        "de hoy, da detalles útiles sobre el día, calendario, temporada o lo "
-        "que corresponda a ese tema). NUNCA respondas preguntando «¿Sobre qué "
-        "tema específico te gustaría que te diera más detalle?» ni digas que "
-        "necesitas contexto cuando ya hay un tema en el historial. "
-        "Cuando el usuario pregunte por el estado del tiempo meteorológico "
-        "(si está nublado, soleado, lloviendo, temperatura, etc.) o sobre "
-        "resultados, partidos y noticias recientes de CUALQUIER DEPORTE en el "
-        "mundo, responde con la información más fresca y actual disponible. "
-        "Usa Markdown estándar para títulos, listas y **negritas**."
-    )
 
     messages: list[dict] = [{"role": "system", "content": system_instruction}]
 
@@ -533,14 +678,6 @@ def chat(
                 "type": "text",
                 "text": f"Notas que el usuario guardó:\n{memories_text}",
             }
-        )
-
-    msg_text = request.message.strip()
-    if _is_followup_detail_request(msg_text):
-        msg_text = (
-            f"{msg_text} (Amplía y da más detalles directamente sobre el "
-            "último tema tratado en esta conversación, sin preguntar de qué "
-            "tema se trata)."
         )
 
     if msg_text:
@@ -574,26 +711,6 @@ def chat(
         if _needs_live_search(request.message, request.history)
         else OPENROUTER_BASE_MODEL
     )
-
-    if request.audio_base64:
-        try:
-            base64.b64decode(request.audio_base64, validate=True)
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="El audio recibido no es válido.",
-            )
-        audio_fmt = _audio_format_from_mime(request.audio_mime_type)
-        user_content.append(
-            {
-                "type": "input_audio",
-                "input_audio": {
-                    "data": request.audio_base64,
-                    "format": audio_fmt,
-                },
-            }
-        )
-        selected_model = OPENROUTER_AUDIO_MODEL
 
     if not user_content:
         user_content.append({"type": "text", "text": "¡Hola!"})
