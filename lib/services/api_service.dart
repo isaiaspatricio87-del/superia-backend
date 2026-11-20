@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 
 class ApiService {
   // Cambia esta URL por la de tu servicio real en Render (sin / al final)
-  static const String baseUrl = 'https://TU-BACKEND.onrender.com';
+  static const String baseUrl = 'https://superia-backend-1.onrender.com';
   static const Duration _timeout = Duration(seconds: 12);
 
   static Future<dynamic> login({
