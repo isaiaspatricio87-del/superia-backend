@@ -22,7 +22,11 @@ ADMIN_KEY = os.getenv("ADMIN_KEY", "isaias-admin-2026")
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 días
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini:online")
+OPENROUTER_BASE_MODEL = os.getenv("OPENROUTER_BASE_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_ONLINE_MODEL = os.getenv(
+    "OPENROUTER_ONLINE_MODEL",
+    "openai/gpt-4o-mini:online",
+)
 OPENROUTER_AUDIO_MODEL = os.getenv(
     "OPENROUTER_AUDIO_MODEL",
     "google/gemini-2.5-flash:online",
@@ -156,6 +160,81 @@ def _audio_format_from_mime(mime_type: str | None) -> str:
     if "m4a" in lowered or "mp4" in lowered or "aac" in lowered:
         return "m4a"
     return "wav"
+
+
+def _is_followup_detail_request(text: str) -> bool:
+    lowered = text.strip().lower()
+    phrases = (
+        "mas detalle",
+        "más detalle",
+        "mas detalles",
+        "más detalles",
+        "mas informacion",
+        "más información",
+        "mas info",
+        "más info",
+        "explicame eso",
+        "explícame eso",
+        "amplia eso",
+        "amplía eso",
+        "continua",
+        "continúa",
+        "sigue",
+        "profundiza",
+    )
+    return any(p in lowered for p in phrases)
+
+
+def _needs_live_search(text: str, history: list["HistoryTurn"]) -> bool:
+    if _is_followup_detail_request(text):
+        return False
+
+    lowered = text.lower()
+    keywords = (
+        "clima",
+        "tiempo",
+        "lluvia",
+        "lloviendo",
+        "nublado",
+        "soleado",
+        "temperatura",
+        "pronostico",
+        "pronóstico",
+        "partido",
+        "partidos",
+        "resultado",
+        "resultados",
+        "juego",
+        "juegos",
+        "gol",
+        "goles",
+        "liga",
+        "nba",
+        "nfl",
+        "mlb",
+        "ufc",
+        "f1",
+        "formula 1",
+        "fórmula 1",
+        "tenis",
+        "boxeo",
+        "beisbol",
+        "béisbol",
+        "futbol",
+        "fútbol",
+        "noticia",
+        "noticias",
+        "actual",
+        "actualidad",
+        "en vivo",
+        "precio",
+        "precios",
+        "dolar",
+        "dólar",
+        "investiga",
+        "busca",
+    )
+    return any(word in lowered for word in keywords)
 
 
 def _call_openrouter(api_key: str, model: str, messages: list[dict]) -> dict:
@@ -403,12 +482,16 @@ def chat(
         )
 
     now_rd = datetime.now(ZoneInfo("America/Santo_Domingo"))
-    fecha_hora_actual = now_rd.strftime("%A, %d/%m/%Y a las %I:%M:%S %p (Hora de República Dominicana, AST)")
+    fecha_hora_actual = now_rd.strftime(
+        "%A, %d/%m/%Y a las %I:%M:%S %p (Hora de República Dominicana, AST)"
+    )
 
     system_instruction = (
         "Eres SuperIA, una inteligencia artificial amigable, cercana, "
-        "respetuosa y eficaz. Responde con naturalidad y calidez, en el "
-        "idioma del usuario. "
+        "respetuosa y eficaz. Responde con naturalidad, limpieza y calidez, "
+        "en el idioma del usuario, sin agregar listas de enlaces o fuentes "
+        "al final a menos que el usuario pida explícitamente enlaces o "
+        "fuentes. "
         f"El usuario autenticado se llama {current_user['name']}. "
         f"FECHA Y HORA ACTUAL EXACTA: {fecha_hora_actual}. "
         "Si el usuario pregunta qué hora es o qué día es hoy, responde usando "
@@ -419,22 +502,24 @@ def chat(
         "sobre el origen de SuperIA, responde claramente que fue creada "
         "por Isaías Patricio Agramonte. No atribuyas la creación de "
         "SuperIA a OpenAI, Google ni a otra persona o empresa. "
-        "Mantén el tema de la conversación. Si el usuario dice «dame más "
-        "detalle», «explícame eso» o algo parecido, continúa el tema "
-        "anterior con un tono conversacional; no le preguntes de nuevo "
-        "cuál era el tema. "
-        "TIENES ACCESO A BÚSQUEDA WEB EN TIEMPO REAL: Cuando el usuario pregunte "
-        "por el estado del tiempo meteorológico (si está nublado, soleado, "
-        "lloviendo, temperatura, etc.) o sobre resultados, partidos y noticias "
-        "recientes de CUALQUIER DEPORTE en el mundo, investiga la información "
-        "más fresca y reciente en la web. No inventes datos ni fuentes; "
-        "si no puedes verificar algo, dilo. Usa Markdown estándar para "
-        "títulos, listas y **negritas**."
+        "REGLA DE CONTINUIDAD: Cuando el usuario pida «más detalle», "
+        "«más información», «explícame eso» o algo similar, SIEMPRE "
+        "continúa y amplía directamente el tema o la última respuesta de la "
+        "conversación anterior (por ejemplo, si antes hablaron de la fecha/día "
+        "de hoy, da detalles útiles sobre el día, calendario, temporada o lo "
+        "que corresponda a ese tema). NUNCA respondas preguntando «¿Sobre qué "
+        "tema específico te gustaría que te diera más detalle?» ni digas que "
+        "necesitas contexto cuando ya hay un tema en el historial. "
+        "Cuando el usuario pregunte por el estado del tiempo meteorológico "
+        "(si está nublado, soleado, lloviendo, temperatura, etc.) o sobre "
+        "resultados, partidos y noticias recientes de CUALQUIER DEPORTE en el "
+        "mundo, responde con la información más fresca y actual disponible. "
+        "Usa Markdown estándar para títulos, listas y **negritas**."
     )
 
     messages: list[dict] = [{"role": "system", "content": system_instruction}]
 
-    for turn in request.history[-12:]:
+    for turn in request.history[-14:]:
         if turn.text.strip():
             role = "assistant" if turn.role == "model" else "user"
             messages.append({"role": role, "content": turn.text.strip()})
@@ -450,11 +535,19 @@ def chat(
             }
         )
 
-    if request.message.strip():
+    msg_text = request.message.strip()
+    if _is_followup_detail_request(msg_text):
+        msg_text = (
+            f"{msg_text} (Amplía y da más detalles directamente sobre el "
+            "último tema tratado en esta conversación, sin preguntar de qué "
+            "tema se trata)."
+        )
+
+    if msg_text:
         user_content.append(
             {
                 "type": "text",
-                "text": request.message.strip(),
+                "text": msg_text,
             }
         )
 
@@ -476,7 +569,11 @@ def chat(
             }
         )
 
-    selected_model = OPENROUTER_MODEL
+    selected_model = (
+        OPENROUTER_ONLINE_MODEL
+        if _needs_live_search(request.message, request.history)
+        else OPENROUTER_BASE_MODEL
+    )
 
     if request.audio_base64:
         try:
@@ -525,19 +622,5 @@ def chat(
 
     if not reply or not reply.strip():
         reply = "No pude generar una respuesta. Inténtalo de nuevo."
-
-    source_links = []
-    seen_urls = set()
-    for annotation in message_obj.get("annotations") or []:
-        url_citation = annotation.get("url_citation") or {}
-        url = url_citation.get("url")
-        title = url_citation.get("title")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            label = title or url
-            source_links.append(f"- [{label}]({url})")
-
-    if source_links:
-        reply += "\n\n**Fuentes:**\n" + "\n".join(source_links)
 
     return {"reply": reply}
