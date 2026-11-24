@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,14 +15,29 @@ import 'package:google_sign_in_web/web_only.dart' as web;
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web/web.dart' as html_web;
 
 import 'services/api_service.dart';
+import 'services/voice_player.dart';
 
 const Color bg = Color(0xFF05091B);
 const Color panel = Color(0xE608122B);
 const Color cyan = Color(0xFF19C7FF);
 const Color blue = Color(0xFF3475FF);
 const Color muted = Color(0xFFAAC0E0);
+
+@JS('registerSuperiaPasteListener')
+external void _registerSuperiaPasteListener(JSFunction callback);
+
+@JS()
+@anonymous
+extension type _PastePayload._(JSObject _) implements JSObject {
+  external String? get type;
+  external String? get name;
+  external String? get mimeType;
+  external String? get base64;
+  external String? get text;
+}
 
 void main() => runApp(const SuperIAApp());
 
@@ -37,6 +55,70 @@ class PendingAttachment {
   final String mimeType;
   final bool isImage;
   final String? extractedText;
+}
+
+class GeneratedDownloadFile {
+  const GeneratedDownloadFile({
+    required this.filename,
+    required this.mimeType,
+    required this.base64Data,
+  });
+
+  final String filename;
+  final String mimeType;
+  final String base64Data;
+
+  Map<String, dynamic> toJson() => {
+        'filename': filename,
+        'mime_type': mimeType,
+        'base64': base64Data,
+      };
+
+  factory GeneratedDownloadFile.fromJson(Map<String, dynamic> json) =>
+      GeneratedDownloadFile(
+        filename: json['filename']?.toString() ?? 'documento_superia.pdf',
+        mimeType: json['mime_type']?.toString() ?? 'application/pdf',
+        base64Data: json['base64']?.toString() ?? '',
+      );
+}
+
+class StoredSentImage {
+  const StoredSentImage({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    required this.imageBase64,
+    required this.sentAt,
+    this.caption = '',
+  });
+
+  final String id;
+  final String name;
+  final String mimeType;
+  final String imageBase64;
+  final DateTime sentAt;
+  final String caption;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'mimeType': mimeType,
+        'imageBase64': imageBase64,
+        'sentAt': sentAt.toIso8601String(),
+        'caption': caption,
+      };
+
+  factory StoredSentImage.fromJson(Map<String, dynamic> json) =>
+      StoredSentImage(
+        id: json['id']?.toString() ??
+            DateTime.now().microsecondsSinceEpoch.toString(),
+        name: json['name']?.toString() ?? 'Imagen.jpg',
+        mimeType: json['mimeType']?.toString() ?? 'image/jpeg',
+        imageBase64: json['imageBase64']?.toString() ?? '',
+        sentAt:
+            DateTime.tryParse(json['sentAt']?.toString() ?? '') ?? DateTime.now(),
+        caption: json['caption']?.toString() ?? '',
+      );
 }
 
 class StoredAccount {
@@ -86,7 +168,7 @@ class SuperIAApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SuperIA',
+      title: 'isaias titan',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -352,6 +434,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   static Future<void>? _sharedGoogleInit;
+  static const String _credentialsKey = 'registeredCredentials';
 
   bool _showEmailForm = false;
   bool _isRegister = false;
@@ -373,6 +456,45 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
     _loadLastAccount();
     _initGoogleSignIn();
+  }
+
+  Future<void> _saveRegisteredCredential({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_credentialsKey);
+    Map<String, dynamic> map = {};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      } catch (_) {
+        map = {};
+      }
+    }
+    map[email.trim().toLowerCase()] = {
+      'name': name.trim(),
+      'password': password,
+    };
+    await prefs.setString(_credentialsKey, jsonEncode(map));
+  }
+
+  Future<Map<String, String>?> _getRegisteredCredential(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_credentialsKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      final entry = map[email.trim().toLowerCase()];
+      if (entry is Map) {
+        return {
+          'name': entry['name']?.toString() ?? '',
+          'password': entry['password']?.toString() ?? '',
+        };
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> _initGoogleSignIn() async {
@@ -417,10 +539,13 @@ class _LoginScreenState extends State<LoginScreen> {
           ? account.displayName!.trim()
           : email.split('@').first;
 
-      final result = await ApiService.googleQuickLogin(
-        name: name,
-        email: email,
-      );
+      final auth = account.authentication;
+      final idToken = auth.idToken ?? '';
+      if (idToken.isEmpty) {
+        throw Exception('Google no entregó el idToken de autenticación.');
+      }
+
+      final result = await ApiService.googleQuickLogin(idToken: idToken);
       final token = result['token']?.toString() ?? '';
       final userMap = Map<String, dynamic>.from(
         (result['user'] as Map?) ?? const {},
@@ -450,9 +575,14 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _loadLastAccount() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
+    final lastEmail = prefs.getString('lastUserEmail') ?? '';
+    final lastName = prefs.getString('lastUserName') ?? '';
     setState(() {
-      _lastAccountName = prefs.getString('lastUserName') ?? '';
-      _lastAccountEmail = prefs.getString('lastUserEmail') ?? '';
+      _lastAccountName = lastName;
+      _lastAccountEmail = lastEmail;
+      if (_emailCtrl.text.isEmpty && lastEmail.isNotEmpty) {
+        _emailCtrl.text = lastEmail;
+      }
     });
   }
 
@@ -472,13 +602,22 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _continueWithSavedAccount() async {
     if (_lastAccountEmail.isEmpty) return;
+    final savedCred = await _getRegisteredCredential(_lastAccountEmail);
+    if (savedCred == null || (savedCred['password'] ?? '').isEmpty) {
+      setState(() {
+        _showEmailForm = true;
+        _isRegister = false;
+        _emailCtrl.text = _lastAccountEmail;
+      });
+      _showError('Inicia sesión con tu contraseña o con Google para continuar.');
+      return;
+    }
+
     setState(() => _submitting = true);
     try {
-      final result = await ApiService.googleQuickLogin(
-        name: _lastAccountName.isNotEmpty
-            ? _lastAccountName
-            : _lastAccountEmail.split('@').first,
+      final result = await ApiService.login(
         email: _lastAccountEmail,
+        password: savedCred['password']!,
       );
       final token = result['token']?.toString() ?? '';
       final userMap = Map<String, dynamic>.from(
@@ -525,22 +664,67 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _submitting = true);
 
     try {
-      final result = _isRegister
-          ? await ApiService.register(
-              name: name,
-              email: email,
-              password: password,
-            )
-          : await ApiService.login(
+      Map<String, dynamic> result;
+
+      if (_isRegister) {
+        await _saveRegisteredCredential(
+          name: name,
+          email: email,
+          password: password,
+        );
+        result = await ApiService.register(
+          name: name,
+          email: email,
+          password: password,
+        );
+      } else {
+        final savedCred = await _getRegisteredCredential(email);
+        try {
+          result = await ApiService.login(
+            email: email,
+            password: password,
+          );
+          await _saveRegisteredCredential(
+            name: (result['user'] is Map &&
+                    (result['user']['name']?.toString().isNotEmpty ?? false))
+                ? result['user']['name'].toString()
+                : (savedCred?['name']?.isNotEmpty == true
+                    ? savedCred!['name']!
+                    : email.split('@').first),
+            email: email,
+            password: password,
+          );
+        } catch (_) {
+          if (savedCred != null && savedCred['password'] == password) {
+            final resolvedSavedName = savedCred['name']!.isNotEmpty
+                ? savedCred['name']!
+                : email.split('@').first;
+            result = await ApiService.register(
+              name: resolvedSavedName,
               email: email,
               password: password,
             );
+          } else if (savedCred != null && savedCred['password'] != password) {
+            throw Exception('La contraseña no coincide con la registrada.');
+          } else {
+            rethrow;
+          }
+        }
+      }
 
       final token = result['token']?.toString() ?? '';
       final userMap = Map<String, dynamic>.from(
         (result['user'] as Map?) ?? const {},
       );
-      final resolvedName = userMap['name']?.toString() ?? name;
+      final savedCredAfter = await _getRegisteredCredential(email);
+      final resolvedName =
+          (userMap['name']?.toString().trim().isNotEmpty == true)
+              ? userMap['name'].toString().trim()
+              : (name.isNotEmpty
+                  ? name
+                  : (savedCredAfter?['name']?.isNotEmpty == true
+                      ? savedCredAfter!['name']!
+                      : email.split('@').first));
       final resolvedEmail = userMap['email']?.toString() ?? email;
 
       if (token.isEmpty) {
@@ -642,7 +826,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         const Icon(Icons.all_inclusive, size: 52, color: cyan),
                         const SizedBox(height: 8),
                         const Text(
-                          'SuperIA',
+                          'isaias titan',
                           style: TextStyle(
                             fontSize: 30,
                             fontWeight: FontWeight.w800,
@@ -900,6 +1084,8 @@ class ChatItem {
     this.imageName,
     this.imagesBase64 = const [],
     this.imageNames = const [],
+    this.documentNames = const [],
+    this.generatedFile,
     this.isVoice = false,
     this.voiceDurationSeconds = 0,
     this.audioBase64,
@@ -912,6 +1098,8 @@ class ChatItem {
   final String? imageName;
   final List<String> imagesBase64;
   final List<String> imageNames;
+  final List<String> documentNames;
+  final GeneratedDownloadFile? generatedFile;
   final bool isVoice;
   final int voiceDurationSeconds;
   final String? audioBase64;
@@ -936,6 +1124,8 @@ class ChatItem {
         'imageName': imageName,
         'imagesBase64': imagesBase64,
         'imageNames': imageNames,
+        'documentNames': documentNames,
+        'generatedFile': generatedFile?.toJson(),
         'isVoice': isVoice,
         'voiceDurationSeconds': voiceDurationSeconds,
         'audioBase64': audioBase64,
@@ -952,6 +1142,18 @@ class ChatItem {
             .where((e) => e.isNotEmpty)
             .toList() ??
         const <String>[];
+    final rawDocs = (json['documentNames'] as List?)
+            ?.map((e) => e.toString())
+            .where((e) => e.isNotEmpty)
+            .toList() ??
+        const <String>[];
+
+    GeneratedDownloadFile? parsedFile;
+    if (json['generatedFile'] is Map) {
+      parsedFile = GeneratedDownloadFile.fromJson(
+        Map<String, dynamic>.from(json['generatedFile'] as Map),
+      );
+    }
 
     return ChatItem(
       user: json['user'] == true,
@@ -962,6 +1164,8 @@ class ChatItem {
       imageName: json['imageName']?.toString(),
       imagesBase64: rawImgs,
       imageNames: rawNames,
+      documentNames: rawDocs,
+      generatedFile: parsedFile,
       isVoice: json['isVoice'] == true,
       voiceDurationSeconds:
           (json['voiceDurationSeconds'] as num?)?.toInt() ?? 0,
@@ -985,8 +1189,10 @@ class WhatsAppVoiceBubble extends StatefulWidget {
 }
 
 class _WhatsAppVoiceBubbleState extends State<WhatsAppVoiceBubble> {
+  final VoiceAudioPlayer _player = VoiceAudioPlayer();
   Timer? _playTimer;
   bool _playing = false;
+  bool _started = false;
   int _elapsedSeconds = 0;
 
   int get _totalSeconds =>
@@ -998,31 +1204,56 @@ class _WhatsAppVoiceBubbleState extends State<WhatsAppVoiceBubble> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
-  void _togglePlay() {
+  void _onAudioFinished() {
+    _playTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _playing = false;
+      _started = false;
+      _elapsedSeconds = _totalSeconds;
+    });
+  }
+
+  Future<void> _togglePlay() async {
     if (_playing) {
       _playTimer?.cancel();
-      setState(() => _playing = false);
+      await _player.pause();
+      if (mounted) setState(() => _playing = false);
       return;
     }
 
+    final b64 = widget.audioBase64;
+    if (b64 == null || b64.isEmpty) return;
+
+    final restart = !_started || _elapsedSeconds >= _totalSeconds;
     setState(() {
-      if (_elapsedSeconds >= _totalSeconds) {
+      if (restart) {
         _elapsedSeconds = 0;
       }
       _playing = true;
+      _started = true;
     });
 
+    try {
+      if (restart) {
+        await _player.playBase64Wav(b64, onEnded: _onAudioFinished);
+      } else {
+        await _player.resume(onEnded: _onAudioFinished);
+      }
+    } catch (_) {
+      _onAudioFinished();
+      return;
+    }
+
+    _playTimer?.cancel();
     _playTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
+      if (!mounted || !_playing) {
         timer.cancel();
         return;
       }
       setState(() {
-        _elapsedSeconds++;
-        if (_elapsedSeconds >= _totalSeconds) {
-          _elapsedSeconds = _totalSeconds;
-          _playing = false;
-          timer.cancel();
+        if (_elapsedSeconds < _totalSeconds) {
+          _elapsedSeconds++;
         }
       });
     });
@@ -1031,24 +1262,27 @@ class _WhatsAppVoiceBubbleState extends State<WhatsAppVoiceBubble> {
   @override
   void dispose() {
     _playTimer?.cancel();
+    _player.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final progress = (_elapsedSeconds / _totalSeconds).clamp(0.0, 1.0);
+    final hasAudio =
+        widget.audioBase64 != null && widget.audioBase64!.isNotEmpty;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         InkWell(
-          onTap: _togglePlay,
+          onTap: hasAudio ? _togglePlay : null,
           borderRadius: BorderRadius.circular(20),
           child: Container(
             width: 34,
             height: 34,
-            decoration: const BoxDecoration(
-              color: cyan,
+            decoration: BoxDecoration(
+              color: hasAudio ? cyan : cyan.withOpacity(0.35),
               shape: BoxShape.circle,
             ),
             child: Icon(
@@ -1182,7 +1416,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   bool _sidebarOpen = true;
   bool _searchingChats = false;
   String _searchQuery = '';
-  String _assistantName = 'SuperIA';
+  String _assistantName = 'Son Goku';
 
   bool _speakReplies = false;
   bool _loading = false;
@@ -1196,10 +1430,12 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   String _activeConversationId = '';
   List<ChatItem> _messages = [];
   List<String> _memories = [];
+  List<StoredSentImage> _sentImages = [];
 
   final List<PendingAttachment> _attachments = [];
 
   final TextEditingController _input = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
   final TextEditingController _searchCtrl = TextEditingController();
   final TextEditingController _memoryInput = TextEditingController();
   final TextEditingController _nameInput = TextEditingController();
@@ -1213,10 +1449,13 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   final List<Uint8List> _recordedPcmChunks = [];
   Timer? _recordingTimer;
 
+  JSFunction? _jsPasteCallback;
+
   String get _conversationsKey =>
       'conversations_${widget.userEmail.toLowerCase()}';
   String get _chatKey => 'chat_${widget.userEmail.toLowerCase()}';
   String get _memoryKey => 'memories_${widget.userEmail.toLowerCase()}';
+  String get _sentImagesKey => 'sent_images_${widget.userEmail.toLowerCase()}';
 
   StoredAccount? get _currentStoredAccount {
     for (final acc in widget.savedAccounts) {
@@ -1255,6 +1494,106 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   void initState() {
     super.initState();
     _loadLocal();
+    if (kIsWeb) {
+      _initWebPasteListener();
+    }
+  }
+
+  String _withIdentityInstruction(String prompt) {
+    final identityRule =
+        '[Instrucción de identidad: Tu nombre es "$_assistantName". '
+        'No te llames SuperIA ni Isaias Titan; si te preguntan cómo te llamas o cuál es tu nombre, responde claramente que te llamas "$_assistantName".]';
+    if (prompt.trim().isEmpty) {
+      return '$identityRule El usuario envió una nota de voz o un documento.';
+    }
+    return '$identityRule
+
+$prompt';
+  }
+
+  void _initWebPasteListener() {
+    try {
+      void onPaste(JSAny? rawPayload) {
+        if (!mounted || _loading || _recording || rawPayload == null) return;
+        final payload = rawPayload as _PastePayload;
+        final kind = payload.type;
+
+        if (kind == 'image') {
+          final b64 = payload.base64 ?? '';
+          if (b64.isEmpty) return;
+          try {
+            final bytes = base64Decode(b64);
+            final name = (payload.name != null && payload.name!.isNotEmpty)
+                ? payload.name!
+                : 'Captura_CtrlV.png';
+            final mime =
+                (payload.mimeType != null && payload.mimeType!.isNotEmpty)
+                    ? payload.mimeType!
+                    : 'image/png';
+            _handlePastedImageBytes(
+              bytes: bytes,
+              name: name,
+              mimeType: mime,
+            );
+          } catch (_) {
+            _toast('No pude procesar la captura pegada.');
+          }
+        } else if (kind == 'text') {
+          final text = payload.text ?? '';
+          if (text.isNotEmpty) {
+            _handlePastedText(text);
+          }
+        }
+      }
+
+      _jsPasteCallback = onPaste.toJS;
+      _registerSuperiaPasteListener(_jsPasteCallback!);
+    } catch (_) {
+      try {
+        globalContext.setProperty('superiaPasteCallback'.toJS, null);
+      } catch (_) {}
+    }
+  }
+
+  void _handlePastedImageBytes({
+    required Uint8List bytes,
+    required String name,
+    required String mimeType,
+  }) {
+    if (!mounted || _loading || _recording) return;
+    setState(() {
+      _attachments.add(
+        PendingAttachment(
+          name: name,
+          bytes: bytes,
+          mimeType: mimeType,
+          isImage: true,
+        ),
+      );
+      _page = 0;
+    });
+    _toast('Captura pegada con Ctrl + V.');
+  }
+
+  void _handlePastedText(String pastedText) {
+    if (!mounted || _loading || _recording || pastedText.isEmpty) return;
+    final current = _input.text;
+    final separator =
+        (current.isNotEmpty && !current.endsWith(' ') && !current.endsWith('
+'))
+            ? ' '
+            : '';
+    final updated = '$current$separator$pastedText';
+    setState(() {
+      _page = 0;
+      _input.value = TextEditingValue(
+        text: updated,
+        selection: TextSelection.collapsed(offset: updated.length),
+      );
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _inputFocus.requestFocus();
+    });
   }
 
   String _initialsFrom(String name, String email) {
@@ -1302,6 +1641,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       if (m.user && m.text.trim().isNotEmpty && !m.isVoice) {
         final clean = m.text.trim().replaceAll(RegExp(r'\s+'), ' ');
         return clean.length > 34 ? '${clean.substring(0, 34)}…' : clean;
+      }
+      if (m.user && m.documentNames.isNotEmpty) {
+        return m.documentNames.first;
       }
     }
     if (fallbackText != null && fallbackText.trim().isNotEmpty) {
@@ -1382,6 +1724,21 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       _conversations = [];
     }
 
+    try {
+      final decodedImgs =
+          jsonDecode(prefs.getString(_sentImagesKey) ?? '[]') as List;
+      _sentImages = decodedImgs
+          .map(
+            (item) => StoredSentImage.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            ),
+          )
+          .where((img) => img.imageBase64.isNotEmpty)
+          .toList();
+    } catch (_) {
+      _sentImages = [];
+    }
+
     if (_conversations.isEmpty && legacyMessages.isNotEmpty) {
       final initialConv = SavedConversation(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -1403,7 +1760,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
 
     _memories = prefs.getStringList(_memoryKey) ?? [];
-    _assistantName = prefs.getString('assistantName') ?? 'SuperIA';
+    _assistantName = prefs.getString('assistantName') ?? 'Son Goku';
     _speakReplies = prefs.getBool('speakReplies') ?? false;
     _nameInput.text = _assistantName;
 
@@ -1422,9 +1779,207 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       _chatKey,
       jsonEncode(_messages.map((item) => item.toJson()).toList()),
     );
+    await prefs.setString(
+      _sentImagesKey,
+      jsonEncode(_sentImages.map((img) => img.toJson()).toList()),
+    );
     await prefs.setStringList(_memoryKey, _memories);
     await prefs.setString('assistantName', _assistantName);
     await prefs.setBool('speakReplies', _speakReplies);
+  }
+
+  Future<void> _recordSentImages(
+    List<PendingAttachment> imageItems,
+    String caption,
+  ) async {
+    if (imageItems.isEmpty) return;
+    final now = DateTime.now();
+    final created = <StoredSentImage>[];
+    for (int i = 0; i < imageItems.length; i++) {
+      final item = imageItems[i];
+      created.add(
+        StoredSentImage(
+          id: '${now.microsecondsSinceEpoch}_$i',
+          name: item.name,
+          mimeType: item.mimeType,
+          imageBase64: base64Encode(item.bytes),
+          sentAt: now,
+          caption: caption,
+        ),
+      );
+    }
+    setState(() {
+      _sentImages.insertAll(0, created);
+      if (_sentImages.length > 80) {
+        _sentImages.removeRange(80, _sentImages.length);
+      }
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _sentImagesKey,
+      jsonEncode(_sentImages.map((img) => img.toJson()).toList()),
+    );
+  }
+
+  Future<void> _deleteSentImage(String id) async {
+    setState(() {
+      _sentImages.removeWhere((img) => img.id == id);
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _sentImagesKey,
+      jsonEncode(_sentImages.map((img) => img.toJson()).toList()),
+    );
+    _toast('Imagen eliminada de la galería.');
+  }
+
+  void _attachStoredImageToChat(StoredSentImage stored) {
+    try {
+      final bytes = base64Decode(stored.imageBase64);
+      setState(() {
+        _attachments.add(
+          PendingAttachment(
+            name: stored.name,
+            bytes: bytes,
+            mimeType: stored.mimeType,
+            isImage: true,
+          ),
+        );
+        _page = 0;
+      });
+      _toast('Imagen añadida al chat.');
+    } catch (_) {
+      _toast('No pude cargar esta imagen.');
+    }
+  }
+
+  void _openImagePreviewDialog(StoredSentImage stored) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => Dialog(
+        backgroundColor: const Color(0xFF08132A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: blue.withOpacity(0.55)),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520, maxHeight: 620),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        stored.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(dialogCtx),
+                      icon: const Icon(Icons.close, color: muted),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Flexible(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Image.memory(
+                      base64Decode(stored.imageBase64),
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+                if (stored.caption.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      stored.caption,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: muted, fontSize: 12.5),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(dialogCtx);
+                        await _deleteSentImage(stored.id);
+                      },
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        color: Colors.redAccent,
+                        size: 18,
+                      ),
+                      label: const Text(
+                        'Eliminar',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      onPressed: () {
+                        Navigator.pop(dialogCtx);
+                        _attachStoredImageToChat(stored);
+                      },
+                      icon: const Icon(Icons.send_rounded, size: 17),
+                      label: const Text('Enviar al chat'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _downloadGeneratedFile(GeneratedDownloadFile file) {
+    if (file.base64Data.isEmpty) {
+      _toast('El archivo generado no contiene datos descargables.');
+      return;
+    }
+
+    if (kIsWeb) {
+      try {
+        final bytes = base64Decode(file.base64Data);
+        final jsBytes = bytes.toJS;
+        final parts = <JSAny>[jsBytes].toJS;
+        final blob = html_web.Blob(
+          parts,
+          html_web.BlobPropertyBag(type: file.mimeType),
+        );
+        final url = html_web.URL.createObjectURL(blob);
+        final anchor =
+            html_web.document.createElement('a') as html_web.HTMLAnchorElement
+              ..href = url
+              ..download = file.filename
+              ..style.display = 'none';
+        html_web.document.body?.append(anchor);
+        anchor.click();
+        anchor.remove();
+        html_web.URL.revokeObjectURL(url);
+        _toast('Descargando ${file.filename}...');
+      } catch (e) {
+        _toast('No pude descargar ${file.filename}: $e');
+      }
+    } else {
+      _toast('Descarga disponible en navegador Web (${file.filename}).');
+    }
   }
 
   Future<void> _startNewConversation() async {
@@ -1922,7 +2477,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                         size: 19,
                       ),
                       label: const Text(
-                        'Gestionar tu perfil de SuperIA',
+                        'Gestionar tu perfil de isaias titan',
                         style: TextStyle(color: Colors.white),
                       ),
                       style: OutlinedButton.styleFrom(
@@ -1950,6 +2505,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     String? imageName,
     List<String> imagesBase64 = const [],
     List<String> imageNames = const [],
+    List<String> documentNames = const [],
+    GeneratedDownloadFile? generatedFile,
     bool isVoice = false,
     int voiceDurationSeconds = 0,
     String? audioBase64,
@@ -1965,6 +2522,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           imageName: imageName,
           imagesBase64: imagesBase64,
           imageNames: imageNames,
+          documentNames: documentNames,
+          generatedFile: generatedFile,
           isVoice: isVoice,
           voiceDurationSeconds: voiceDurationSeconds,
           audioBase64: audioBase64,
@@ -2028,7 +2587,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
       case '/memoria':
         if (_memories.isEmpty) return 'Aún no hay notas guardadas.';
-        return 'Esto es lo que recuerdo:\n• ${_memories.join('\n• ')}';
+        return 'Esto es lo que recuerdo:
+• ${_memories.join('
+• ')}';
 
       case '/limpiar':
         setState(() {
@@ -2072,43 +2633,40 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
     final imagesB64 =
         imageItems.map((img) => base64Encode(img.bytes)).toList();
-    final allNames = batch.map((a) => a.name).toList();
+    final docNames = docItems.map((d) => d.name).toList();
+
+    final documentsPayload = docItems
+        .map(
+          (doc) => <String, String>{
+            'name': doc.name,
+            'mime_type': doc.mimeType,
+            'base64': base64Encode(doc.bytes),
+          },
+        )
+        .toList();
 
     final buffer = StringBuffer();
-    if (text.isNotEmpty) {
-      buffer.writeln(text);
-    } else if (imageItems.isNotEmpty) {
-      buffer.writeln(
-        'Lee y analiza detalladamente ${imageItems.length > 1 ? 'estas imágenes o capturas' : 'esta imagen o captura'}. '
-        'Si contienen preguntas, ejercicios o un examen, resuélvelos paso a paso y explica claramente.',
-      );
-    } else {
-      buffer.writeln(
-        'Analiza detalladamente los siguientes archivos adjuntos y responde o resuelve su contenido.',
-      );
-    }
+    if (imageItems.isNotEmpty) {
+      if (text.isNotEmpty) {
+        buffer.writeln(
+          '$text
 
-    if (imageItems.length > 1) {
-      buffer.writeln(
-        '\nNota: El usuario adjuntó ${imageItems.length} imágenes (${imageItems.map((e) => e.name).join(', ')}).',
-      );
-    }
-
-    for (final doc in docItems) {
-      buffer.writeln('\n--- Archivo adjunto: ${doc.name} ---');
-      if (doc.extractedText != null && doc.extractedText!.trim().isNotEmpty) {
-        final safeText = doc.extractedText!.length > 14000
-            ? '${doc.extractedText!.substring(0, 14000)}\n...[contenido recortado]'
-            : doc.extractedText!;
-        buffer.writeln(safeText);
+Describe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imágenes' : 'esta imagen'} y responde a mi mensaje.',
+        );
       } else {
         buffer.writeln(
-          '(Archivo binario ${doc.mimeType}, ${(doc.bytes.length / 1024).toStringAsFixed(1)} KB)',
+          'Describe y analiza detalladamente ${imageItems.length > 1 ? 'estas imágenes' : 'esta imagen'}.',
         );
       }
+    } else if (text.isNotEmpty) {
+      buffer.writeln(text);
+    } else {
+      buffer.writeln(
+        'Analiza, investiga y resuelve el contenido de estos documentos con datos reales.',
+      );
     }
 
-    final promptForBackend = buffer.toString().trim();
+    final promptForBackend = _withIdentityInstruction(buffer.toString().trim());
 
     _input.clear();
     setState(() {
@@ -2116,32 +2674,30 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       _loading = true;
     });
 
-    final displayLabel = text.isNotEmpty
-        ? text
-        : (batch.length == 1
-            ? (batch.first.isImage
-                ? 'Imagen adjunta: ${batch.first.name}'
-                : 'Archivo adjunto: ${batch.first.name}')
-            : '${batch.length} archivos adjuntos');
+    if (imageItems.isNotEmpty) {
+      await _recordSentImages(imageItems, text);
+    }
 
     try {
       await _addMessage(
         true,
-        displayLabel,
+        text,
         imageBase64: imagesB64.isNotEmpty ? imagesB64.first : null,
-        imageName: allNames.isNotEmpty ? allNames.first : null,
         imagesBase64: imagesB64,
-        imageNames: allNames,
-        hintTitle: text.isNotEmpty ? text : allNames.first,
+        documentNames: docNames,
+        hintTitle: text.isNotEmpty
+            ? text
+            : (batch.isNotEmpty ? batch.first.name : null),
       );
 
       final commandReply = batch.isEmpty ? await _runCommand(text) : null;
       final String reply;
+      GeneratedDownloadFile? downloadedFile;
 
       if (commandReply != null) {
         reply = commandReply;
       } else {
-        final completer = Completer<String>();
+        final completer = Completer<Map<String, dynamic>>();
 
         _currentRequestSubscription = Stream.fromFuture(
           ApiService.sendMessage(
@@ -2152,6 +2708,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             image: imageItems.isNotEmpty ? imageItems.first.bytes : null,
             imageMimeType:
                 imageItems.isNotEmpty ? imageItems.first.mimeType : null,
+            documents: documentsPayload,
           ),
         ).listen((res) {
           if (!completer.isCompleted) completer.complete(res);
@@ -2159,11 +2716,24 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           if (!completer.isCompleted) completer.completeError(err);
         });
 
-        reply = await completer.future;
+        final responseMap = await completer.future;
+        reply = responseMap['reply']?.toString() ?? '';
+        final rawFile = responseMap['generated_file'];
+        if (rawFile is Map<String, dynamic>) {
+          downloadedFile = GeneratedDownloadFile.fromJson(rawFile);
+        } else if (rawFile is Map) {
+          downloadedFile = GeneratedDownloadFile.fromJson(
+            Map<String, dynamic>.from(rawFile),
+          );
+        }
       }
 
       if (mounted) {
-        await _addMessage(false, reply);
+        await _addMessage(
+          false,
+          reply,
+          generatedFile: downloadedFile,
+        );
         if (_speakReplies) await _speak(reply);
       }
     } catch (error) {
@@ -2198,6 +2768,15 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (lower.endsWith('.gif')) return 'image/gif';
     if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
     if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.docx')) {
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xlsm')) {
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    if (lower.endsWith('.pptx')) {
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    }
     if (lower.endsWith('.txt')) return 'text/plain';
     if (lower.endsWith('.csv')) return 'text/csv';
     if (lower.endsWith('.json')) return 'application/json';
@@ -2234,7 +2813,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     if (lower.endsWith('.pdf')) {
       try {
         final raw = latin1.decode(bytes);
-        final matches = RegExp(r'\(([^\(\)\\]{2,200})\)').allMatches(raw);
+        final matches = RegExp(r'\(([^\(\)\]{2,200})\)').allMatches(raw);
         final extracted = matches
             .map((m) => m.group(1) ?? '')
             .where((s) => RegExp(r'[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]').hasMatch(s))
@@ -2312,16 +2891,41 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   Future<void> _pickFiles() async {
     try {
-      final files = await _picker.pickMultipleMedia(
-        imageQuality: 85,
-        maxWidth: 1920,
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        withData: true,
+        type: FileType.custom,
+        allowedExtensions: const [
+          'pdf',
+          'docx',
+          'xlsx',
+          'xlsm',
+          'pptx',
+          'txt',
+          'md',
+          'csv',
+          'tsv',
+          'json',
+          'xml',
+          'html',
+          'htm',
+          'dart',
+          'py',
+          'js',
+          'ts',
+          'png',
+          'jpg',
+          'jpeg',
+          'webp',
+        ],
       );
-      if (files.isEmpty) return;
+      if (result == null || result.files.isEmpty) return;
 
       final added = <PendingAttachment>[];
-      for (final file in files) {
-        final bytes = await file.readAsBytes();
-        final name = file.name.isNotEmpty ? file.name : 'Archivo';
+      for (final file in result.files) {
+        final bytes = file.bytes;
+        if (bytes == null || bytes.isEmpty) continue;
+        final name = file.name.isNotEmpty ? file.name : 'Documento';
         final isImg = _isImageFilename(name);
         added.add(
           PendingAttachment(
@@ -2335,13 +2939,18 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         );
       }
 
+      if (added.isEmpty) {
+        _toast('No pude leer los bytes del archivo seleccionado.');
+        return;
+      }
+
       if (!mounted) return;
       setState(() {
         _attachments.addAll(added);
         _page = 0;
       });
     } catch (_) {
-      _toast('No pude abrir el selector de archivos.');
+      _toast('No pude abrir el selector de documentos y archivos.');
     }
   }
 
@@ -2360,6 +2969,18 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              ListTile(
+                leading: const Icon(Icons.upload_file_outlined, color: cyan),
+                title: const Text('Subir documentos y archivos'),
+                subtitle: const Text(
+                  'PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), TXT, CSV y más',
+                  style: TextStyle(color: muted, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _pickFiles();
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.photo_library_outlined, color: cyan),
                 title: const Text('Fotos'),
@@ -2382,18 +3003,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 onTap: () {
                   Navigator.pop(sheetCtx);
                   _pickFromCamera();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.upload_file_outlined, color: cyan),
-                title: const Text('Subir archivos'),
-                subtitle: const Text(
-                  'Sube documentos, capturas o archivos desde tu dispositivo',
-                  style: TextStyle(color: muted, fontSize: 12),
-                ),
-                onTap: () {
-                  Navigator.pop(sheetCtx);
-                  _pickFiles();
                 },
               ),
             ],
@@ -2556,11 +3165,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         audioBase64: wavB64,
       );
 
-      final completer = Completer<String>();
+      final completer = Completer<Map<String, dynamic>>();
       _currentRequestSubscription = Stream.fromFuture(
         ApiService.sendMessage(
           authToken: widget.authToken,
-          message: '',
+          message: _withIdentityInstruction(''),
           memories: _memories,
           history: history,
           audioWav: wav,
@@ -2574,15 +3183,17 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         },
       );
 
-      final reply = await Future.any<String>([
+      final responseMap = await Future.any<Map<String, dynamic>>([
         completer.future,
-        Future<String>.delayed(
+        Future<Map<String, dynamic>>.delayed(
           const Duration(seconds: 120),
           () => throw TimeoutException(
             'El servidor tardó más de 120 segundos en responder al audio.',
           ),
         ),
       ]);
+
+      final reply = responseMap['reply']?.toString() ?? '';
 
       if (!mounted) return;
 
@@ -2636,7 +3247,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   Future<void> _saveSettings() async {
     setState(() {
       _assistantName = _nameInput.text.trim().isEmpty
-          ? 'SuperIA'
+          ? 'Son Goku'
           : _nameInput.text.trim();
     });
 
@@ -2650,7 +3261,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Borrar datos locales'),
         content: const Text(
-          'Se borrarán tus conversaciones recientes y memorias guardadas en este dispositivo.',
+          'Se borrarán tus conversaciones recientes, imágenes guardadas y memorias en este dispositivo.',
         ),
         actions: [
           TextButton(
@@ -2671,11 +3282,13 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     await prefs.remove(_chatKey);
     await prefs.remove(_conversationsKey);
     await prefs.remove(_memoryKey);
+    await prefs.remove(_sentImagesKey);
 
     setState(() {
       _messages.clear();
       _conversations.clear();
       _memories.clear();
+      _sentImages.clear();
       _activeConversationId =
           DateTime.now().microsecondsSinceEpoch.toString();
     });
@@ -2685,12 +3298,19 @@ class _SuperIAHomeState extends State<SuperIAHome> {
 
   @override
   void dispose() {
+    if (kIsWeb) {
+      try {
+        globalContext.setProperty('superiaPasteCallback'.toJS, null);
+      } catch (_) {}
+    }
+    _jsPasteCallback = null;
     _recordingTimer?.cancel();
     _recordingSubscription?.cancel();
     _currentRequestSubscription?.cancel();
     _recorder.dispose();
     _tts.stop();
     _input.dispose();
+    _inputFocus.dispose();
     _searchCtrl.dispose();
     _memoryInput.dispose();
     _nameInput.dispose();
@@ -2901,10 +3521,10 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               _sidebarMenuRow(
                 icon: Icons.photo_library_outlined,
                 label: 'Imágenes',
-                selected: false,
+                selected: _page == 4,
                 onTap: () {
                   if (inDrawer) Navigator.pop(context);
-                  _pickMultiplePhotos();
+                  _setPage(4);
                 },
               ),
               _sidebarMenuRow(
@@ -3213,9 +3833,133 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         return _memoryView();
       case 3:
         return _settingsView();
+      case 4:
+        return _imagesGalleryView(wide);
       default:
         return _chatView(wide);
     }
+  }
+
+  Widget _imagesGalleryView(bool wide) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _title(
+                'Imágenes mandadas',
+                'Aquí quedan guardadas las imágenes que has enviado en tus chats.',
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () => _setPage(0),
+              icon: const Icon(Icons.chat_bubble_outline, size: 18, color: cyan),
+              label: const Text('Volver al chat', style: TextStyle(color: cyan)),
+            ),
+          ],
+        ),
+        Expanded(
+          child: _sentImages.isEmpty
+              ? Center(
+                  child: _glassCard(
+                    padding: const EdgeInsets.all(24),
+                    child: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.photo_library_outlined,
+                          size: 42,
+                          color: cyan,
+                        ),
+                        SizedBox(height: 10),
+                        Text(
+                          'Aún no has mandado imágenes',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Cuando envíes una foto o captura desde el chat, aparecerá guardada aquí.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: muted, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : GridView.builder(
+                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: wide ? 230 : 185,
+                    mainAxisExtent: 215,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  itemCount: _sentImages.length,
+                  itemBuilder: (context, index) {
+                    final img = _sentImages[index];
+                    return _glassCard(
+                      padding: const EdgeInsets.all(8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () => _openImagePreviewDialog(img),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(11),
+                                child: Image.memory(
+                                  base64Decode(img.imageBase64),
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  img.caption.isNotEmpty
+                                      ? img.caption
+                                      : img.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => _deleteSentImage(img.id),
+                                borderRadius: BorderRadius.circular(8),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(4),
+                                  child: Icon(
+                                    Icons.delete_outline,
+                                    size: 17,
+                                    color: Colors.redAccent,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            TimeOfDay.fromDateTime(img.sentAt).format(context),
+                            style: const TextStyle(color: muted, fontSize: 10.5),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
   }
 
   Widget _chatView(bool wide) {
@@ -3289,31 +4033,6 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               _attachmentThumbnailCard(_attachments[i], i),
               if (i < _attachments.length - 1) const SizedBox(width: 10),
             ],
-            const SizedBox(width: 10),
-            InkWell(
-              onTap: _openAttachMenu,
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                width: 74,
-                height: 74,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0C1D3F),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: cyan.withOpacity(0.45)),
-                ),
-                child: const Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add, color: cyan, size: 22),
-                    SizedBox(height: 2),
-                    Text(
-                      'Más',
-                      style: TextStyle(color: muted, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ),
           ],
         ),
       ),
@@ -3413,6 +4132,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   Widget _messageBubble(ChatItem item) {
     final images = item.allImagesBase64;
     final names = item.allImageNames;
+    final docs = item.documentNames;
 
     final bubble = Container(
       margin: const EdgeInsets.symmetric(vertical: 5),
@@ -3438,6 +4158,51 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               durationSeconds: item.voiceDurationSeconds,
               audioBase64: item.audioBase64,
             ),
+          if (docs.isNotEmpty) ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final docName in docs)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0E2554),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: cyan.withOpacity(0.55)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.description_rounded,
+                          color: cyan,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 7),
+                        Flexible(
+                          child: Text(
+                            docName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            if (item.text.isNotEmpty || images.isNotEmpty)
+              const SizedBox(height: 8),
+          ],
           if (images.isNotEmpty) ...[
             Wrap(
               spacing: 8,
@@ -3455,15 +4220,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                   ),
               ],
             ),
-            if (names.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '📎 ${names.join(', ')}',
-                  style: const TextStyle(color: muted, fontSize: 11),
-                ),
-              ),
-            const SizedBox(height: 5),
+            if (item.text.isNotEmpty) const SizedBox(height: 6),
           ] else if (names.isNotEmpty) ...[
             Text(
               '📄 ${names.join(', ')}',
@@ -3507,6 +4264,59 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                       listBullet: const TextStyle(color: Colors.white),
                     ),
                   ),
+          if (item.generatedFile != null &&
+              item.generatedFile!.base64Data.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D234D),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cyan.withOpacity(0.6)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.file_present_rounded,
+                    color: cyan,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      item.generatedFile!.filename,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: () =>
+                        _downloadGeneratedFile(item.generatedFile!),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                    ),
+                    icon: const Icon(Icons.download_rounded, size: 17),
+                    label: const Text(
+                      'Descargar',
+                      style: TextStyle(fontSize: 12.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 6),
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -3594,7 +4404,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         child: Row(
           children: [
             IconButton(
-              tooltip: 'Fotos, Cámara y Subir archivos',
+              tooltip: 'Subir documentos, Fotos y Cámara',
               onPressed: (_loading || _recording) ? null : _openAttachMenu,
               icon: const Icon(Icons.add_rounded, color: muted, size: 25),
               visualDensity: VisualDensity.compact,
@@ -3602,6 +4412,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             Expanded(
               child: TextField(
                 controller: _input,
+                focusNode: _inputFocus,
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
@@ -3883,7 +4694,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 ),
                 const SizedBox(height: 5),
                 const Text(
-                  'SuperIA se conecta automáticamente a su servicio seguro. '
+                  'isaias titan se conecta automáticamente a su servicio seguro. '
                   'No necesitas ingresar URL ni claves aquí.',
                   style: TextStyle(color: muted, height: 1.4),
                 ),
@@ -3904,7 +4715,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 ),
                 const SizedBox(height: 5),
                 const Text(
-                  'Tus conversaciones recientes y memoria se guardan en este dispositivo. '
+                  'Tus conversaciones recientes, imágenes enviadas y memoria se guardan en este dispositivo. '
                   'Las imágenes y el audio se envían al servidor para que la IA los analice.',
                   style: TextStyle(color: muted, height: 1.4),
                 ),

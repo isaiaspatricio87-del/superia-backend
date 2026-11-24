@@ -3,3 +3,8 @@ uvicorn
 requests
 pydantic
 google-genai
+google-auth
+pypdf
+python-docx
+openpyxl
+python-pptx

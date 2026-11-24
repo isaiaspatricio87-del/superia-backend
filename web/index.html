@@ -34,6 +34,62 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+    window.superiaPasteCallback = null;
+
+    window.registerSuperiaPasteListener = function (callback) {
+      window.superiaPasteCallback = callback;
+    };
+
+    document.addEventListener('paste', function (event) {
+      if (!window.superiaPasteCallback) return;
+      const clipboardData = event.clipboardData || window.clipboardData;
+      if (!clipboardData) return;
+
+      if (clipboardData.items) {
+        for (let i = 0; i < clipboardData.items.length; i++) {
+          const item = clipboardData.items[i];
+          if (item.type && item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (!file) continue;
+
+            const reader = new FileReader();
+            reader.onload = function () {
+              const result = String(reader.result || '');
+              const commaIdx = result.indexOf(',');
+              const base64 = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
+              const ext = item.type.split('/')[1] || 'png';
+              window.superiaPasteCallback({
+                type: 'image',
+                name: 'Captura_CtrlV.' + ext,
+                mimeType: item.type,
+                base64: base64
+              });
+            };
+            reader.readAsDataURL(file);
+            event.preventDefault();
+            return;
+          }
+        }
+      }
+
+      const pastedText = clipboardData.getData('text/plain');
+      if (pastedText && pastedText.length > 0) {
+        const activeTag = (document.activeElement && document.activeElement.tagName || '').toLowerCase();
+        const isEditable = activeTag === 'input' || activeTag === 'textarea' ||
+          (document.activeElement && document.activeElement.isContentEditable);
+
+        if (!isEditable) {
+          window.superiaPasteCallback({
+            type: 'text',
+            text: pastedText
+          });
+          event.preventDefault();
+        }
+      }
+    });
+  </script>
+
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
