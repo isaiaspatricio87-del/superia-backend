@@ -19,15 +19,12 @@ class ApiService {
 
     try {
       final dynamic decoded = jsonDecode(response.body);
-
       if (decoded is Map<String, dynamic>) {
         return decoded;
       }
-
       if (decoded is Map) {
         return Map<String, dynamic>.from(decoded);
       }
-
       return <String, dynamic>{'data': decoded};
     } on FormatException {
       throw Exception(
@@ -47,15 +44,13 @@ class ApiService {
     if (detail is String && detail.trim().isNotEmpty) {
       return detail.trim();
     }
-
     if (detail != null && detail.toString().trim().isNotEmpty) {
       return detail.toString();
     }
-
     return '$fallback (HTTP $statusCode).';
   }
 
-  static Future> login({
+  static Future<Map<String, dynamic>> login({
     required String email,
     required String password,
   }) async {
@@ -71,7 +66,6 @@ class ApiService {
         .timeout(_authTimeout);
 
     final data = _decodeJsonSafe(response);
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(
         _extractErrorDetail(
@@ -81,11 +75,10 @@ class ApiService {
         ),
       );
     }
-
     return data;
   }
 
-  static Future> register({
+  static Future<Map<String, dynamic>> register({
     required String name,
     required String email,
     required String password,
@@ -103,7 +96,6 @@ class ApiService {
         .timeout(_authTimeout);
 
     final data = _decodeJsonSafe(response);
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(
         _extractErrorDetail(
@@ -113,11 +105,10 @@ class ApiService {
         ),
       );
     }
-
     return data;
   }
 
-  static Future> googleQuickLogin({
+  static Future<Map<String, dynamic>> googleQuickLogin({
     required String idToken,
   }) async {
     final cleanIdToken = idToken.trim();
@@ -134,7 +125,6 @@ class ApiService {
         .timeout(_authTimeout);
 
     final data = _decodeJsonSafe(response);
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(
         _extractErrorDetail(
@@ -144,11 +134,10 @@ class ApiService {
         ),
       );
     }
-
     return data;
   }
 
-  static Future> sendMessage({
+  static Future<Map<String, dynamic>> sendMessage({
     required String authToken,
     required String message,
     required List<String> memories,
@@ -156,8 +145,7 @@ class ApiService {
     Uint8List? image,
     String? imageMimeType,
     Uint8List? audioWav,
-    // Cada documento debe tener: name, mime_type y base64.
-    List> documents = const [],
+    List<Map<String, String>> documents = const [],
   }) async {
     final body = <String, dynamic>{
       'message': message,
@@ -170,15 +158,9 @@ class ApiService {
       if (documents.isNotEmpty) 'documents': documents,
     };
 
-    final Duration requestTimeout;
-
-    if (audioWav != null) {
-      requestTimeout = _audioTimeout;
-    } else if (documents.isNotEmpty) {
-      requestTimeout = _documentTimeout;
-    } else {
-      requestTimeout = _chatTimeout;
-    }
+    final Duration requestTimeout = audioWav != null
+        ? _audioTimeout
+        : (documents.isNotEmpty ? _documentTimeout : _chatTimeout);
 
     final response = await http
         .post(
@@ -193,7 +175,6 @@ class ApiService {
         .timeout(requestTimeout);
 
     final data = _decodeJsonSafe(response);
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(
         _extractErrorDetail(
@@ -208,7 +189,6 @@ class ApiService {
         data['response']?.toString() ??
         data['message']?.toString() ??
         '';
-
     if (reply.trim().isEmpty) {
       throw Exception(
         'El servidor respondió, pero no devolvió texto. '

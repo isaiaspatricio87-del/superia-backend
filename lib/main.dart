@@ -57,6 +57,7 @@ class PendingAttachment {
   final String? extractedText;
 }
 
+
 class GeneratedDownloadFile {
   const GeneratedDownloadFile({
     required this.filename,
@@ -545,7 +546,9 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('Google no entregó el idToken de autenticación.');
       }
 
-      final result = await ApiService.googleQuickLogin(idToken: idToken);
+      final result = await ApiService.googleQuickLogin(
+        idToken: idToken,
+      );
       final token = result['token']?.toString() ?? '';
       final userMap = Map<String, dynamic>.from(
         (result['user'] as Map?) ?? const {},
@@ -1416,7 +1419,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   bool _sidebarOpen = true;
   bool _searchingChats = false;
   String _searchQuery = '';
-  String _assistantName = 'Son Goku';
+  String _assistantName = 'isaias titan';
 
   bool _speakReplies = false;
   bool _loading = false;
@@ -1502,13 +1505,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   String _withIdentityInstruction(String prompt) {
     final identityRule =
         '[Instrucción de identidad: Tu nombre es "$_assistantName". '
-        'No te llames SuperIA ni Isaias Titan; si te preguntan cómo te llamas o cuál es tu nombre, responde claramente que te llamas "$_assistantName".]';
+        'No te llames SuperIA; si te preguntan cómo te llamas, responde que te llamas "$_assistantName".]';
     if (prompt.trim().isEmpty) {
-      return '$identityRule El usuario envió una nota de voz o un documento.';
+      return '$identityRule El usuario envió una nota de voz.';
     }
-    return '$identityRule
-
-$prompt';
+    return '$identityRule\n\n$prompt';
   }
 
   void _initWebPasteListener() {
@@ -1579,8 +1580,7 @@ $prompt';
     if (!mounted || _loading || _recording || pastedText.isEmpty) return;
     final current = _input.text;
     final separator =
-        (current.isNotEmpty && !current.endsWith(' ') && !current.endsWith('
-'))
+        (current.isNotEmpty && !current.endsWith(' ') && !current.endsWith('\n'))
             ? ' '
             : '';
     final updated = '$current$separator$pastedText';
@@ -1760,7 +1760,7 @@ $prompt';
     }
 
     _memories = prefs.getStringList(_memoryKey) ?? [];
-    _assistantName = prefs.getString('assistantName') ?? 'Son Goku';
+    _assistantName = prefs.getString('assistantName') ?? 'isaias titan';
     _speakReplies = prefs.getBool('speakReplies') ?? false;
     _nameInput.text = _assistantName;
 
@@ -2587,9 +2587,7 @@ $prompt';
 
       case '/memoria':
         if (_memories.isEmpty) return 'Aún no hay notas guardadas.';
-        return 'Esto es lo que recuerdo:
-• ${_memories.join('
-• ')}';
+        return 'Esto es lo que recuerdo:\n• ${_memories.join('\n• ')}';
 
       case '/limpiar':
         setState(() {
@@ -2649,9 +2647,7 @@ $prompt';
     if (imageItems.isNotEmpty) {
       if (text.isNotEmpty) {
         buffer.writeln(
-          '$text
-
-Describe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imágenes' : 'esta imagen'} y responde a mi mensaje.',
+          '$text\n\nDescribe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imágenes' : 'esta imagen'} y responde a mi mensaje.',
         );
       } else {
         buffer.writeln(
@@ -2813,7 +2809,7 @@ Describe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imág
     if (lower.endsWith('.pdf')) {
       try {
         final raw = latin1.decode(bytes);
-        final matches = RegExp(r'\(([^\(\)\]{2,200})\)').allMatches(raw);
+        final matches = RegExp(r'\(([^\(\)\\]{2,200})\)').allMatches(raw);
         final extracted = matches
             .map((m) => m.group(1) ?? '')
             .where((s) => RegExp(r'[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]').hasMatch(s))
@@ -3247,7 +3243,7 @@ Describe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imág
   Future<void> _saveSettings() async {
     setState(() {
       _assistantName = _nameInput.text.trim().isEmpty
-          ? 'Son Goku'
+          ? 'isaias titan'
           : _nameInput.text.trim();
     });
 
@@ -4404,7 +4400,7 @@ Describe detalladamente lo que aparece en ${imageItems.length > 1 ? 'estas imág
         child: Row(
           children: [
             IconButton(
-              tooltip: 'Subir documentos, Fotos y Cámara',
+              tooltip: 'Subir archivos, Fotos y Cámara',
               onPressed: (_loading || _recording) ? null : _openAttachMenu,
               icon: const Icon(Icons.add_rounded, color: muted, size: 25),
               visualDensity: VisualDensity.compact,

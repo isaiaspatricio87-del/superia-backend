@@ -47,7 +47,7 @@ GEMINI_AUDIO_MODEL = os.getenv(
 ).strip()
 
 
-app = FastAPI(title="SuperIA Backend")
+app = FastAPI(title="Isaias Titan Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -176,7 +176,7 @@ def _require_user(authorization: str | None) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
-            detail="Debes iniciar sesión para usar SuperIA.",
+            detail="Debes iniciar sesión para usar Isaias Titan.",
         )
 
     token = authorization.removeprefix("Bearer ").strip()
@@ -285,7 +285,7 @@ def _needs_live_search(text: str, history: list["HistoryTurn"]) -> bool:
     return any(word in lowered for word in keywords)
 
 
-def _detect_requested_format(text: str) -> str | None:
+def _detect_requested_format(text: str, has_documents: bool = False) -> str | None:
     lowered = text.lower()
     wants_file = any(
         k in lowered
@@ -295,7 +295,11 @@ def _detect_requested_format(text: str) -> str | None:
             "documento pdf",
             "formato pdf",
             "a pdf",
+            "por pdf",
+            "por documento pdf",
+            "en un pdf",
             "en word",
+            "por word",
             "docx",
             "documento word",
             "en powerpoint",
@@ -309,17 +313,22 @@ def _detect_requested_format(text: str) -> str | None:
             "hoja de cálculo",
             "mandame",
             "mándame",
+            "enviame",
+            "envíame",
             "genera un archivo",
+            "genera el archivo",
+            "genera el documento",
             "crea un archivo",
+            "crea el documento",
+            "hazme el documento",
             "descarga",
+            "descargable",
         )
     )
-    if not wants_file:
-        return None
 
-    if "pdf" in lowered:
+    if "pdf" in lowered and (wants_file or has_documents):
         return "pdf"
-    if "word" in lowered or "docx" in lowered:
+    if ("word" in lowered or "docx" in lowered) and (wants_file or has_documents):
         return "docx"
     if (
         "powerpoint" in lowered
@@ -327,14 +336,18 @@ def _detect_requested_format(text: str) -> str | None:
         or "pptx" in lowered
         or "presentacion" in lowered
         or "presentación" in lowered
-    ):
+    ) and (wants_file or has_documents):
         return "pptx"
-    if "excel" in lowered or "xlsx" in lowered:
+    if ("excel" in lowered or "xlsx" in lowered) and (wants_file or has_documents):
         return "xlsx"
-    if "markdown" in lowered or ".md" in lowered:
+    if ("markdown" in lowered or ".md" in lowered) and wants_file:
         return "md"
-    if ".txt" in lowered or "texto plano" in lowered:
+    if (".txt" in lowered or "texto plano" in lowered) and wants_file:
         return "txt"
+
+    if wants_file and any(w in lowered for w in ("documento", "archivo", "trabajo", "tarea", "reporte", "informe")):
+        return "pdf"
+
     return None
 
 
@@ -425,7 +438,7 @@ def _build_generated_file(
     fetched_images: list[tuple[str, bytes]],
 ) -> dict | None:
     """Construye un archivo real descargable (PDF, DOCX, PPTX, XLSX, MD, TXT)."""
-    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", title.strip())[:40].strip("_") or "investigacion_superia"
+    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", title.strip())[:40].strip("_") or "investigacion_isaias_titan"
     clean_lines = [line.strip() for line in markdown_text.splitlines() if line.strip()]
 
     if fmt in {"md", "txt"}:
@@ -498,7 +511,7 @@ def _build_generated_file(
             title_slide = prs.slides.add_slide(prs.slide_layouts[0])
             title_slide.shapes.title.text = title[:120]
             if len(title_slide.placeholders) > 1:
-                title_slide.placeholders[1].text = "Generado por SuperIA"
+                title_slide.placeholders[1].text = "Generado por Isaias Titan"
 
             chunks: list[str] = []
             current = ""
@@ -575,65 +588,131 @@ def _build_generated_file(
 
     if fmt == "pdf":
         try:
+            from xml.sax.saxutils import escape as xml_escape
+
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
             from reportlab.lib.pagesizes import letter
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.lib.units import inch
             from reportlab.lib.utils import ImageReader
-            from reportlab.pdfgen import canvas
+            from reportlab.platypus import (
+                Image as RLImage,
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+            )
 
             buf = io.BytesIO()
-            c = canvas.Canvas(buf, pagesize=letter)
-            width, height = letter
-            margin = 0.75 * inch
-            y = height - margin
+            doc = SimpleDocTemplate(
+                buf,
+                pagesize=letter,
+                leftMargin=0.85 * inch,
+                rightMargin=0.85 * inch,
+                topMargin=0.85 * inch,
+                bottomMargin=0.85 * inch,
+                title=title[:120],
+            )
 
-            c.setFont("Helvetica-Bold", 15)
-            c.drawString(margin, y, title[:85])
-            y -= 24
-            c.setFont("Helvetica", 10)
+            base_styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                "TitanTitle",
+                parent=base_styles["Heading1"],
+                fontName="Times-Bold",
+                fontSize=16,
+                leading=21,
+                textColor=colors.HexColor("#0B1F44"),
+                spaceAfter=14,
+                alignment=TA_LEFT,
+            )
+            h2_style = ParagraphStyle(
+                "TitanH2",
+                parent=base_styles["Heading2"],
+                fontName="Times-Bold",
+                fontSize=13.5,
+                leading=18,
+                textColor=colors.HexColor("#102A5C"),
+                spaceBefore=10,
+                spaceAfter=6,
+            )
+            h3_style = ParagraphStyle(
+                "TitanH3",
+                parent=base_styles["Heading3"],
+                fontName="Times-Bold",
+                fontSize=12.5,
+                leading=16,
+                textColor=colors.HexColor("#16397A"),
+                spaceBefore=8,
+                spaceAfter=4,
+            )
+            body_style = ParagraphStyle(
+                "TitanBody",
+                parent=base_styles["Normal"],
+                fontName="Times-Roman",
+                fontSize=12,
+                leading=17,
+                spaceAfter=7,
+                alignment=TA_JUSTIFY,
+            )
+            bullet_style = ParagraphStyle(
+                "TitanBullet",
+                parent=body_style,
+                leftIndent=18,
+                firstLineIndent=-10,
+                spaceAfter=5,
+            )
+            caption_style = ParagraphStyle(
+                "TitanCaption",
+                parent=base_styles["Italic"],
+                fontName="Times-Italic",
+                fontSize=9.5,
+                leading=12,
+                textColor=colors.HexColor("#4B5563"),
+                spaceAfter=10,
+            )
 
-            max_chars = 95
+            def _md_inline_to_rl(raw: str) -> str:
+                escaped = xml_escape(raw)
+                escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+                escaped = re.sub(r"\*(.+?)\*", r"<i>\1</i>", escaped)
+                return escaped
+
+            story = [
+                Paragraph(xml_escape(title[:140]), title_style),
+                Spacer(1, 4),
+            ]
+
             for raw_line in clean_lines:
-                line = re.sub(r"[#*_`]+", "", raw_line).strip()
-                if not line:
-                    continue
-                wrapped = [
-                    line[i : i + max_chars]
-                    for i in range(0, len(line), max_chars)
-                ]
-                for w_line in wrapped:
-                    if y < margin + 30:
-                        c.showPage()
-                        y = height - margin
-                        c.setFont("Helvetica", 10)
-                    c.drawString(margin, y, w_line)
-                    y -= 14
+                if raw_line.startswith("### "):
+                    story.append(Paragraph(_md_inline_to_rl(raw_line[4:]), h3_style))
+                elif raw_line.startswith("## "):
+                    story.append(Paragraph(_md_inline_to_rl(raw_line[3:]), h2_style))
+                elif raw_line.startswith("# "):
+                    story.append(Paragraph(_md_inline_to_rl(raw_line[2:]), h2_style))
+                elif raw_line.startswith(("- ", "* ")):
+                    story.append(
+                        Paragraph(f"• {_md_inline_to_rl(raw_line[2:])}", bullet_style)
+                    )
+                else:
+                    story.append(Paragraph(_md_inline_to_rl(raw_line), body_style))
 
             for caption, img_bytes in fetched_images:
                 try:
                     reader = ImageReader(io.BytesIO(img_bytes))
                     iw, ih = reader.getSize()
-                    target_w = min(width - 2 * margin, 4.5 * inch)
+                    target_w = min(doc.width, 4.6 * inch)
                     target_h = target_w * (ih / max(iw, 1))
-                    if y - target_h < margin:
-                        c.showPage()
-                        y = height - margin
-                    c.drawImage(
-                        reader,
-                        margin,
-                        y - target_h,
-                        width=target_w,
-                        height=target_h,
-                        preserveAspectRatio=True,
+                    story.append(Spacer(1, 8))
+                    story.append(
+                        RLImage(io.BytesIO(img_bytes), width=target_w, height=target_h)
                     )
-                    y -= target_h + 14
-                    c.setFont("Helvetica-Oblique", 8)
-                    c.drawString(margin, y, f"Imagen: {caption[:90]}")
-                    y -= 18
-                    c.setFont("Helvetica", 10)
+                    story.append(
+                        Paragraph(f"Imagen: {xml_escape(caption[:100])}", caption_style)
+                    )
                 except Exception:
                     continue
 
-            c.save()
+            doc.build(story)
             return {
                 "filename": f"{safe_slug}.pdf",
                 "mime_type": "application/pdf",
@@ -655,7 +734,7 @@ def _build_system_instruction(user_name: str) -> str:
     )
 
     return (
-        "Eres SuperIA, una inteligencia artificial amigable, cercana, "
+        "Eres Isaias Titan, una inteligencia artificial amigable, cercana, "
         "respetuosa y rigurosa. Responde con naturalidad, limpieza y calidez, "
         "en el idioma del usuario. No agregues enlaces o fuentes si no son "
         "pertinentes o si no puedes confirmar que realmente fueron consultados. "
@@ -665,8 +744,8 @@ def _build_system_instruction(user_name: str) -> str:
         "esa fecha y hora exacta. "
         "Tu creador y desarrollador es Isaías Patricio Agramonte. "
         "Si te preguntan quién te creó, quién te desarrolló, quién es "
-        "tu creador, quién hizo SuperIA o cualquier pregunta equivalente "
-        "sobre el origen de SuperIA, responde claramente que fue creada "
+        "tu creador, quién hizo Isaias Titan o cualquier pregunta equivalente "
+        "sobre el origen de Isaias Titan, responde claramente que fue creada "
         "por Isaías Patricio Agramonte. No atribuyas la creación de "
         "SuperIA a OpenAI, Google ni a otra persona o empresa. "
         "REGLAS ESTRICTAS PARA DOCUMENTOS E INVESTIGACIÓN: "
@@ -917,7 +996,7 @@ def _call_openrouter(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://superia-backend-1.onrender.com",
-            "X-Title": "SuperIA",
+            "X-Title": "Isaias Titan",
         },
         method="POST",
     )
@@ -1382,7 +1461,7 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def home():
     return {
-        "status": "SuperIA activo",
+        "status": "Isaias Titan activo",
         "provider": "OpenRouter + Gemini Audio",
     }
 
@@ -1625,7 +1704,10 @@ def chat(
 
     msg_text = request.message.strip()
     document_text = _extract_documents(request.documents)
-    requested_fmt = _detect_requested_format(msg_text)
+    requested_fmt = _detect_requested_format(
+        msg_text,
+        has_documents=bool(request.documents),
+    )
     wants_imgs = _wants_images_in_output(msg_text)
 
     if document_text:
@@ -1816,7 +1898,7 @@ def chat(
             else (
                 os.path.basename(request.documents[0].name)
                 if request.documents
-                else "Investigación SuperIA"
+                else "Investigación Isaias Titan"
             )
         )
         generated_file = _build_generated_file(
@@ -1829,6 +1911,11 @@ def chat(
             reply = (
                 f"{reply}\n\nArchivo listo para descargar: "
                 f"**{generated_file['filename']}**."
+            )
+        else:
+            reply = (
+                f"{reply}\n\n*(Nota: no se pudo construir el archivo .{requested_fmt}. "
+                "Verifica que reportlab, python-docx, python-pptx y openpyxl estén en requirements.txt.)*"
             )
 
     return {

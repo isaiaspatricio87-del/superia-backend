@@ -1,10 +1,11 @@
 fastapi
-uvicorn
-requests
+uvicorn[standard]
 pydantic
-google-genai
 google-auth
+google-genai
+requests
 pypdf
+reportlab
 python-docx
-openpyxl
 python-pptx
+openpyxl
