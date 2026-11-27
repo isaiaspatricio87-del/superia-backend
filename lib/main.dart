@@ -57,7 +57,6 @@ class PendingAttachment {
   final String? extractedText;
 }
 
-
 class GeneratedDownloadFile {
   const GeneratedDownloadFile({
     required this.filename,
@@ -79,6 +78,31 @@ class GeneratedDownloadFile {
       GeneratedDownloadFile(
         filename: json['filename']?.toString() ?? 'documento_superia.pdf',
         mimeType: json['mime_type']?.toString() ?? 'application/pdf',
+        base64Data: json['base64']?.toString() ?? '',
+      );
+}
+
+class GeneratedTopicImage {
+  const GeneratedTopicImage({
+    required this.caption,
+    required this.mimeType,
+    required this.base64Data,
+  });
+
+  final String caption;
+  final String mimeType;
+  final String base64Data;
+
+  Map<String, dynamic> toJson() => {
+        'caption': caption,
+        'mime_type': mimeType,
+        'base64': base64Data,
+      };
+
+  factory GeneratedTopicImage.fromJson(Map<String, dynamic> json) =>
+      GeneratedTopicImage(
+        caption: json['caption']?.toString() ?? 'Imagen generada',
+        mimeType: json['mime_type']?.toString() ?? 'image/jpeg',
         base64Data: json['base64']?.toString() ?? '',
       );
 }
@@ -540,15 +564,12 @@ class _LoginScreenState extends State<LoginScreen> {
           ? account.displayName!.trim()
           : email.split('@').first;
 
-      final auth = account.authentication;
-      final idToken = auth.idToken ?? '';
+      final idToken = account.authentication.idToken ?? '';
       if (idToken.isEmpty) {
-        throw Exception('Google no entregó el idToken de autenticación.');
+        throw Exception('Google no devolvió un ID token válido.');
       }
 
-      final result = await ApiService.googleQuickLogin(
-        idToken: idToken,
-      );
+      final result = await ApiService.googleQuickLogin(idToken: idToken);
       final token = result['token']?.toString() ?? '';
       final userMap = Map<String, dynamic>.from(
         (result['user'] as Map?) ?? const {},
@@ -612,7 +633,7 @@ class _LoginScreenState extends State<LoginScreen> {
         _isRegister = false;
         _emailCtrl.text = _lastAccountEmail;
       });
-      _showError('Inicia sesión con tu contraseña o con Google para continuar.');
+      _showError('Escribe tu contraseña o entra con Google para continuar.');
       return;
     }
 
@@ -682,37 +703,20 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       } else {
         final savedCred = await _getRegisteredCredential(email);
-        try {
-          result = await ApiService.login(
-            email: email,
-            password: password,
-          );
-          await _saveRegisteredCredential(
-            name: (result['user'] is Map &&
-                    (result['user']['name']?.toString().isNotEmpty ?? false))
-                ? result['user']['name'].toString()
-                : (savedCred?['name']?.isNotEmpty == true
-                    ? savedCred!['name']!
-                    : email.split('@').first),
-            email: email,
-            password: password,
-          );
-        } catch (_) {
-          if (savedCred != null && savedCred['password'] == password) {
-            final resolvedSavedName = savedCred['name']!.isNotEmpty
-                ? savedCred['name']!
-                : email.split('@').first;
-            result = await ApiService.register(
-              name: resolvedSavedName,
-              email: email,
-              password: password,
-            );
-          } else if (savedCred != null && savedCred['password'] != password) {
-            throw Exception('La contraseña no coincide con la registrada.');
-          } else {
-            rethrow;
-          }
-        }
+        result = await ApiService.login(
+          email: email,
+          password: password,
+        );
+        await _saveRegisteredCredential(
+          name: (result['user'] is Map &&
+                  (result['user']['name']?.toString().isNotEmpty ?? false))
+              ? result['user']['name'].toString()
+              : (savedCred?['name']?.isNotEmpty == true
+                  ? savedCred!['name']!
+                  : email.split('@').first),
+          email: email,
+          password: password,
+        );
       }
 
       final token = result['token']?.toString() ?? '';
@@ -1089,6 +1093,8 @@ class ChatItem {
     this.imageNames = const [],
     this.documentNames = const [],
     this.generatedFile,
+    this.filePreview,
+    this.generatedImages = const [],
     this.isVoice = false,
     this.voiceDurationSeconds = 0,
     this.audioBase64,
@@ -1103,6 +1109,8 @@ class ChatItem {
   final List<String> imageNames;
   final List<String> documentNames;
   final GeneratedDownloadFile? generatedFile;
+  final String? filePreview;
+  final List<GeneratedTopicImage> generatedImages;
   final bool isVoice;
   final int voiceDurationSeconds;
   final String? audioBase64;
@@ -1129,6 +1137,8 @@ class ChatItem {
         'imageNames': imageNames,
         'documentNames': documentNames,
         'generatedFile': generatedFile?.toJson(),
+        'filePreview': filePreview,
+        'generatedImages': generatedImages.map((e) => e.toJson()).toList(),
         'isVoice': isVoice,
         'voiceDurationSeconds': voiceDurationSeconds,
         'audioBase64': audioBase64,
@@ -1158,6 +1168,15 @@ class ChatItem {
       );
     }
 
+    final parsedGenImgs = (json['generatedImages'] as List?)
+            ?.whereType<Map>()
+            .map((e) => GeneratedTopicImage.fromJson(
+                  Map<String, dynamic>.from(e),
+                ))
+            .where((e) => e.base64Data.isNotEmpty)
+            .toList() ??
+        const <GeneratedTopicImage>[];
+
     return ChatItem(
       user: json['user'] == true,
       text: json['text']?.toString() ?? '',
@@ -1169,6 +1188,8 @@ class ChatItem {
       imageNames: rawNames,
       documentNames: rawDocs,
       generatedFile: parsedFile,
+      filePreview: json['filePreview']?.toString(),
+      generatedImages: parsedGenImgs,
       isVoice: json['isVoice'] == true,
       voiceDurationSeconds:
           (json['voiceDurationSeconds'] as num?)?.toInt() ?? 0,
@@ -1427,7 +1448,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   bool _recording = false;
   int _recordingSeconds = 0;
 
-  StreamSubscription? _currentRequestSubscription;
+  StreamSubscription<Map<String, dynamic>>? _currentRequestSubscription;
 
   List<SavedConversation> _conversations = [];
   String _activeConversationId = '';
@@ -1512,6 +1533,190 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     return '$identityRule\n\n$prompt';
   }
 
+  String _sanitizeNoBlueLinks(String raw) {
+    final withoutMdLinks = raw.replaceAllMapped(
+      RegExp(r'\[([^\]]+)\]\((https?://[^\)]+)\)'),
+      (m) => m.group(1) ?? '',
+    );
+    return withoutMdLinks.replaceAll(RegExp(r'https?://\S+'), '').trim();
+  }
+
+  MarkdownStyleSheet _cleanMarkdownStyle(BuildContext context, {double fontSize = 15}) {
+    final base = MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+      p: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize,
+        height: 1.48,
+        fontWeight: FontWeight.normal,
+      ),
+      strong: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize,
+        height: 1.48,
+        fontWeight: FontWeight.bold,
+      ),
+      a: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize,
+        decoration: TextDecoration.none,
+      ),
+      h1: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize + 5,
+        fontWeight: FontWeight.bold,
+      ),
+      h2: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize + 3,
+        fontWeight: FontWeight.bold,
+      ),
+      h3: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize + 1.5,
+        fontWeight: FontWeight.bold,
+      ),
+      listBullet: TextStyle(
+        color: Colors.white,
+        fontSize: fontSize,
+      ),
+      blockquoteDecoration: BoxDecoration(
+        color: const Color(0xFF0E1F42),
+        borderRadius: BorderRadius.circular(10),
+        border: const Border(left: BorderSide(color: cyan, width: 3)),
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: const Color(0xFF040A1A),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: blue.withOpacity(0.4)),
+      ),
+    );
+    return base;
+  }
+
+  void _openDocumentPreviewDialog(
+    GeneratedDownloadFile file,
+    String previewMarkdown,
+    List<GeneratedTopicImage> images,
+  ) {
+    final cleanPreview = _sanitizeNoBlueLinks(previewMarkdown);
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => Dialog(
+        backgroundColor: const Color(0xFF08132A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: BorderSide(color: blue.withOpacity(0.6)),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720, maxHeight: 680),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.description_outlined, color: cyan, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Vista previa · ${file.filename}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(dialogCtx),
+                      icon: const Icon(Icons.close, color: muted),
+                    ),
+                  ],
+                ),
+                const Divider(color: Colors.white12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0C1A38),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: blue.withOpacity(0.35)),
+                    ),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          MarkdownBody(
+                            data: cleanPreview.isNotEmpty
+                                ? cleanPreview
+                                : 'No hay vista previa disponible para este archivo.',
+                            selectable: true,
+                            styleSheet: _cleanMarkdownStyle(context, fontSize: 14.5),
+                          ),
+                          if (images.isNotEmpty) ...[
+                            const SizedBox(height: 16),
+                            for (final img in images) ...[
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.memory(
+                                  base64Decode(img.base64Data),
+                                  fit: BoxFit.contain,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                img.caption,
+                                style: const TextStyle(
+                                  color: muted,
+                                  fontSize: 12,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogCtx),
+                      child: const Text(
+                        'Cerrar',
+                        style: TextStyle(color: muted),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton.icon(
+                      onPressed: () {
+                        Navigator.pop(dialogCtx);
+                        _downloadGeneratedFile(file);
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: blue,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.download_rounded, size: 18),
+                      label: const Text('Descargar documento'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _initWebPasteListener() {
     try {
       void onPaste(JSAny? rawPayload) {
@@ -1579,10 +1784,11 @@ class _SuperIAHomeState extends State<SuperIAHome> {
   void _handlePastedText(String pastedText) {
     if (!mounted || _loading || _recording || pastedText.isEmpty) return;
     final current = _input.text;
-    final separator =
-        (current.isNotEmpty && !current.endsWith(' ') && !current.endsWith('\n'))
-            ? ' '
-            : '';
+    final separator = (current.isNotEmpty &&
+            !current.endsWith(' ') &&
+            !current.endsWith('\n'))
+        ? ' '
+        : '';
     final updated = '$current$separator$pastedText';
     setState(() {
       _page = 0;
@@ -2507,6 +2713,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     List<String> imageNames = const [],
     List<String> documentNames = const [],
     GeneratedDownloadFile? generatedFile,
+    String? filePreview,
+    List<GeneratedTopicImage> generatedImages = const [],
     bool isVoice = false,
     int voiceDurationSeconds = 0,
     String? audioBase64,
@@ -2524,6 +2732,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           imageNames: imageNames,
           documentNames: documentNames,
           generatedFile: generatedFile,
+          filePreview: filePreview,
+          generatedImages: generatedImages,
           isVoice: isVoice,
           voiceDurationSeconds: voiceDurationSeconds,
           audioBase64: audioBase64,
@@ -2544,7 +2754,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     });
   }
 
-  List<dynamic> _conversationHistory() {
+  List<Map<String, String>> _conversationHistory() {
     final previous =
         _messages.where((item) => item.text.trim().isNotEmpty).toList();
 
@@ -2658,8 +2868,18 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       buffer.writeln(text);
     } else {
       buffer.writeln(
-        'Analiza, investiga y resuelve el contenido de estos documentos con datos reales.',
+        'Lee, analiza y resume estos documentos (PDF, Word, Excel, texto, etc.) con detalle.',
       );
+    }
+
+    for (final doc in docItems) {
+      if (doc.extractedText != null && doc.extractedText!.trim().isNotEmpty) {
+        buffer.writeln('\n--- Contenido extraído de ${doc.name} ---');
+        final safeText = doc.extractedText!.length > 16000
+            ? '${doc.extractedText!.substring(0, 16000)}\n...[contenido recortado]'
+            : doc.extractedText!;
+        buffer.writeln(safeText);
+      }
     }
 
     final promptForBackend = _withIdentityInstruction(buffer.toString().trim());
@@ -2689,6 +2909,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       final commandReply = batch.isEmpty ? await _runCommand(text) : null;
       final String reply;
       GeneratedDownloadFile? downloadedFile;
+      String? filePreview;
+      List<GeneratedTopicImage> generatedImgs = const [];
 
       if (commandReply != null) {
         reply = commandReply;
@@ -2713,7 +2935,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         });
 
         final responseMap = await completer.future;
-        reply = responseMap['reply']?.toString() ?? '';
+        reply = _sanitizeNoBlueLinks(responseMap['reply']?.toString() ?? '');
+        filePreview = responseMap['file_preview']?.toString();
+
         final rawFile = responseMap['generated_file'];
         if (rawFile is Map<String, dynamic>) {
           downloadedFile = GeneratedDownloadFile.fromJson(rawFile);
@@ -2722,6 +2946,17 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             Map<String, dynamic>.from(rawFile),
           );
         }
+
+        final rawGenImgs = responseMap['generated_images'];
+        if (rawGenImgs is List) {
+          generatedImgs = rawGenImgs
+              .whereType<Map>()
+              .map((e) => GeneratedTopicImage.fromJson(
+                    Map<String, dynamic>.from(e),
+                  ))
+              .where((e) => e.base64Data.isNotEmpty)
+              .toList();
+        }
       }
 
       if (mounted) {
@@ -2729,6 +2964,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           false,
           reply,
           generatedFile: downloadedFile,
+          filePreview: filePreview,
+          generatedImages: generatedImgs,
         );
         if (_speakReplies) await _speak(reply);
       }
@@ -2789,17 +3026,58 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         lower.endsWith('.gif');
   }
 
+  String? _extractPdfTextFallback(Uint8List bytes) {
+    try {
+      final raw = latin1.decode(bytes, allowInvalid: true);
+      final chunks = <String>[];
+
+      final parenMatches = RegExp(r'\(([^()\\]{2,240})\)').allMatches(raw);
+      for (final m in parenMatches) {
+        final piece = (m.group(1) ?? '')
+            .replaceAll(r'\(', '(')
+            .replaceAll(r'\)', ')')
+            .replaceAll(r'\\', r'\')
+            .trim();
+        if (piece.length >= 2 &&
+            RegExp(r'[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]').hasMatch(piece)) {
+          chunks.add(piece);
+        }
+      }
+
+      final btMatches = RegExp(r'BT([\s\S]*?)ET').allMatches(raw);
+      for (final bt in btMatches) {
+        final body = bt.group(1) ?? '';
+        for (final m in RegExp(r'\(([^()\\]{2,240})\)').allMatches(body)) {
+          final piece = (m.group(1) ?? '').trim();
+          if (piece.length >= 2 && !chunks.contains(piece)) {
+            chunks.add(piece);
+          }
+        }
+      }
+
+      if (chunks.isEmpty) return null;
+      final joined = chunks.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+      return joined.isEmpty ? null : joined;
+    } catch (_) {
+      return null;
+    }
+  }
+
   String? _tryExtractReadableText(Uint8List bytes, String filename) {
     final lower = filename.toLowerCase();
     final isTextLike = lower.endsWith('.txt') ||
         lower.endsWith('.md') ||
         lower.endsWith('.csv') ||
+        lower.endsWith('.tsv') ||
         lower.endsWith('.json') ||
         lower.endsWith('.xml') ||
         lower.endsWith('.html') ||
+        lower.endsWith('.htm') ||
         lower.endsWith('.dart') ||
         lower.endsWith('.py') ||
-        lower.endsWith('.js');
+        lower.endsWith('.js') ||
+        lower.endsWith('.ts') ||
+        lower.endsWith('.log');
     if (isTextLike) {
       try {
         return utf8.decode(bytes, allowMalformed: true);
@@ -2807,18 +3085,25 @@ class _SuperIAHomeState extends State<SuperIAHome> {
     }
 
     if (lower.endsWith('.pdf')) {
+      return _extractPdfTextFallback(bytes);
+    }
+
+    if (lower.endsWith('.docx') ||
+        lower.endsWith('.xlsx') ||
+        lower.endsWith('.pptx')) {
       try {
-        final raw = latin1.decode(bytes);
-        final matches = RegExp(r'\(([^\(\)\\]{2,200})\)').allMatches(raw);
-        final extracted = matches
-            .map((m) => m.group(1) ?? '')
-            .where((s) => RegExp(r'[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]').hasMatch(s))
-            .join(' ');
-        if (extracted.trim().isNotEmpty) {
-          return extracted.trim();
+        final raw = latin1.decode(bytes, allowInvalid: true);
+        final xmlTags = RegExp(r'>([^<]{2,240})<')
+            .allMatches(raw)
+            .map((m) => (m.group(1) ?? '').trim())
+            .where((t) => RegExp(r'[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]').hasMatch(t))
+            .toList();
+        if (xmlTags.isNotEmpty) {
+          return xmlTags.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
         }
       } catch (_) {}
     }
+
     return null;
   }
 
@@ -2946,7 +3231,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         _page = 0;
       });
     } catch (_) {
-      _toast('No pude abrir el selector de documentos y archivos.');
+      _toast('No pude abrir el selector de archivos.');
     }
   }
 
@@ -2967,9 +3252,9 @@ class _SuperIAHomeState extends State<SuperIAHome> {
             children: [
               ListTile(
                 leading: const Icon(Icons.upload_file_outlined, color: cyan),
-                title: const Text('Subir documentos y archivos'),
+                title: const Text('Subir PDF y documentos'),
                 subtitle: const Text(
-                  'PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), TXT, CSV y más',
+                  'PDF, Word (.docx), Excel (.xlsx), TXT, CSV, JSON y más',
                   style: TextStyle(color: muted, fontSize: 12),
                 ),
                 onTap: () {
@@ -3189,7 +3474,7 @@ class _SuperIAHomeState extends State<SuperIAHome> {
         ),
       ]);
 
-      final reply = responseMap['reply']?.toString() ?? '';
+      final reply = _sanitizeNoBlueLinks(responseMap['reply']?.toString() ?? '');
 
       if (!mounted) return;
 
@@ -3423,24 +3708,23 @@ class _SuperIAHomeState extends State<SuperIAHome> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
           child: Row(
             children: [
-              const Icon(Icons.all_inclusive, size: 24, color: cyan),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _assistantName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
               IconButton(
-                tooltip: 'Buscar en recientes',
+                tooltip: 'Menú',
+                onPressed: () {
+                  if (inDrawer) {
+                    Navigator.pop(context);
+                  } else {
+                    setState(() => _sidebarOpen = false);
+                  }
+                },
+                icon: const Icon(Icons.menu, color: Colors.white),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: 'Buscar chats',
                 onPressed: () {
                   setState(() {
                     _searchingChats = !_searchingChats;
@@ -3452,26 +3736,8 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                 },
                 icon: Icon(
                   _searchingChats ? Icons.close : Icons.search,
-                  color: muted,
-                  size: 20,
+                  color: Colors.white,
                 ),
-                visualDensity: VisualDensity.compact,
-              ),
-              IconButton(
-                tooltip: 'Cerrar barra lateral',
-                onPressed: () {
-                  if (inDrawer) {
-                    Navigator.pop(context);
-                  } else {
-                    setState(() => _sidebarOpen = false);
-                  }
-                },
-                icon: const Icon(
-                  Icons.view_sidebar_outlined,
-                  color: muted,
-                  size: 20,
-                ),
-                visualDensity: VisualDensity.compact,
               ),
             ],
           ),
@@ -3483,19 +3749,13 @@ class _SuperIAHomeState extends State<SuperIAHome> {
               controller: _searchCtrl,
               autofocus: true,
               onChanged: (v) => setState(() => _searchQuery = v),
-              style: const TextStyle(fontSize: 13),
               decoration: InputDecoration(
-                hintText: 'Buscar chat reciente…',
-                hintStyle: const TextStyle(color: muted, fontSize: 13),
+                hintText: 'Buscar conversación...',
                 isDense: true,
                 filled: true,
-                fillColor: const Color(0xFF0B1836),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 9,
-                ),
+                fillColor: const Color(0xFF0A1733),
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   borderSide: BorderSide(color: blue.withOpacity(0.45)),
                 ),
               ),
@@ -3503,90 +3763,124 @@ class _SuperIAHomeState extends State<SuperIAHome> {
           ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Column(
-            children: [
-              _sidebarMenuRow(
-                icon: Icons.edit_square,
-                label: 'Chat nuevo',
-                selected: _page == 0 && _messages.isEmpty,
-                onTap: () async {
-                  if (inDrawer) Navigator.pop(context);
-                  await _startNewConversation();
-                },
-              ),
-              _sidebarMenuRow(
-                icon: Icons.photo_library_outlined,
-                label: 'Imágenes',
-                selected: _page == 4,
-                onTap: () {
-                  if (inDrawer) Navigator.pop(context);
-                  _setPage(4);
-                },
-              ),
-              _sidebarMenuRow(
-                icon: Icons.bolt,
-                label: 'Comandos',
-                selected: _page == 1,
-                onTap: () {
-                  if (inDrawer) Navigator.pop(context);
-                  _setPage(1);
-                },
-              ),
-              _sidebarMenuRow(
-                icon: Icons.psychology_alt_outlined,
-                label: 'Memoria',
-                selected: _page == 2,
-                onTap: () {
-                  if (inDrawer) Navigator.pop(context);
-                  _setPage(2);
-                },
-              ),
-            ],
+          child: ListTile(
+            dense: true,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            leading: const Icon(Icons.edit_square, color: cyan, size: 20),
+            title: const Text(
+              'Nuevo chat',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            onTap: () {
+              if (inDrawer) Navigator.pop(context);
+              _startNewConversation();
+            },
           ),
         ),
-        const SizedBox(height: 12),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: ListTile(
+            dense: true,
+            selected: _page == 3,
+            selectedTileColor: blue.withOpacity(0.22),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            leading: const Icon(Icons.photo_library_outlined, color: cyan, size: 20),
+            title: const Text('Imágenes'),
+            trailing: _sentImages.isNotEmpty
+                ? Text(
+                    '${_sentImages.length}',
+                    style: const TextStyle(color: muted, fontSize: 12),
+                  )
+                : null,
+            onTap: () {
+              if (inDrawer) Navigator.pop(context);
+              _setPage(3);
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: ListTile(
+            dense: true,
+            selected: _page == 1,
+            selectedTileColor: blue.withOpacity(0.22),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            leading: const Icon(Icons.bolt, color: cyan, size: 20),
+            title: const Text('Comandos'),
+            onTap: () {
+              if (inDrawer) Navigator.pop(context);
+              _setPage(1);
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: ListTile(
+            dense: true,
+            selected: _page == 2,
+            selectedTileColor: blue.withOpacity(0.22),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            leading: const Icon(Icons.psychology_outlined, color: cyan, size: 20),
+            title: const Text('Memoria'),
+            onTap: () {
+              if (inDrawer) Navigator.pop(context);
+              _setPage(2);
+            },
+          ),
+        ),
         const Padding(
-          padding: EdgeInsets.fromLTRB(16, 4, 16, 6),
+          padding: EdgeInsets.fromLTRB(18, 12, 18, 6),
           child: Text(
             'Recientes',
             style: TextStyle(
               color: muted,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ),
         Expanded(
           child: filteredConversations.isEmpty
               ? const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                   child: Text(
-                    'Tus conversaciones guardadas aparecerán aquí.',
-                    style: TextStyle(color: muted, fontSize: 12),
+                    'Sin conversaciones recientes',
+                    style: TextStyle(color: muted, fontSize: 12.5),
                   ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   itemCount: filteredConversations.length,
-                  itemBuilder: (context, index) {
-                    final conv = filteredConversations[index];
-                    final isCurrent =
+                  itemBuilder: (ctx, i) {
+                    final conv = filteredConversations[i];
+                    final active =
                         _page == 0 && conv.id == _activeConversationId;
                     return Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
+                      padding: const EdgeInsets.only(bottom: 4),
                       child: Material(
-                        color: isCurrent
-                            ? const Color(0xFF10366F).withOpacity(0.72)
+                        color: active
+                            ? const Color(0xFF14356B)
                             : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
                         child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: () async {
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {
                             if (inDrawer) Navigator.pop(context);
-                            await _openConversation(conv);
+                            _openConversation(conv);
                           },
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 9,
+                            ),
                             child: Row(
                               children: [
                                 Expanded(
@@ -3595,30 +3889,21 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                      color: isCurrent
-                                          ? Colors.white
-                                          : Colors.white.withOpacity(0.88),
+                                      color: Colors.white,
                                       fontSize: 13.5,
-                                      fontWeight: isCurrent
-                                          ? FontWeight.w600
+                                      fontWeight: active
+                                          ? FontWeight.w700
                                           : FontWeight.normal,
                                     ),
                                   ),
                                 ),
-                                IconButton(
-                                  tooltip: 'Eliminar chat',
-                                  onPressed: () => _deleteConversation(conv.id),
-                                  icon: const Icon(
+                                InkWell(
+                                  onTap: () => _deleteConversation(conv.id),
+                                  child: const Icon(
                                     Icons.delete_outline,
                                     size: 16,
                                     color: muted,
                                   ),
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 26,
-                                    minHeight: 26,
-                                  ),
                                 ),
                               ],
                             ),
@@ -3629,1145 +3914,752 @@ class _SuperIAHomeState extends State<SuperIAHome> {
                   },
                 ),
         ),
-        Container(
-          padding: const EdgeInsets.fromLTRB(10, 8, 8, 10),
-          decoration: BoxDecoration(
-            border: Border(
-              top: BorderSide(color: blue.withOpacity(0.32)),
-            ),
-          ),
+        const Divider(color: Colors.white12, height: 1),
+        Padding(
+          padding: const EdgeInsets.all(10),
           child: Row(
             children: [
               Expanded(
-                child: Material(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      if (inDrawer) Navigator.pop(context);
-                      _openProfileSwitcherModal();
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 6,
-                      ),
-                      child: Row(
-                        children: [
-                          _buildUserAvatar(
-                            name: displayName,
-                            email: widget.userEmail,
-                            avatarBase64: currentAvatar,
-                            radius: 17,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  displayName,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13.5,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                Text(
-                                  widget.userEmail,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: muted,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Configuración',
-                onPressed: () {
-                  if (inDrawer) Navigator.pop(context);
-                  _setPage(3);
-                },
-                icon: Icon(
-                  Icons.settings_outlined,
-                  color: _page == 3 ? cyan : muted,
-                  size: 21,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _sidebarMenuRow({
-    required IconData icon,
-    required String label,
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 3),
-      child: Material(
-        color: selected ? const Color(0xFF10366F) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            child: Row(
-              children: [
-                Icon(
-                  icon,
-                  color: selected ? cyan : Colors.white.withOpacity(0.85),
-                  size: 19,
-                ),
-                const SizedBox(width: 11),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight:
-                          selected ? FontWeight.w600 : FontWeight.normal,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _topBar(bool wide) => Container(
-        height: 58,
-        padding: EdgeInsets.symmetric(horizontal: wide ? 20 : 10),
-        decoration: BoxDecoration(
-          color: const Color(0x9905091B),
-          border: Border(bottom: BorderSide(color: blue.withOpacity(.25))),
-        ),
-        child: Row(
-          children: [
-            if (!wide || !_sidebarOpen)
-              IconButton(
-                tooltip: 'Abrir menú',
-                onPressed: () {
-                  if (wide) {
-                    setState(() => _sidebarOpen = true);
-                  } else {
-                    _scaffoldKey.currentState?.openDrawer();
-                  }
-                },
-                icon: const Icon(
-                  Icons.view_sidebar_outlined,
-                  color: Colors.white,
-                ),
-              ),
-            Expanded(
-              child: Text(
-                '✨ $_assistantName',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: const Color(0xFF05221F),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFF087C78)),
-              ),
-              child: const Text(
-                '● RENDER CONECTADO',
-                style: TextStyle(
-                  color: Color(0xFF58F6B5),
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            IconButton(
-              tooltip: 'Chat nuevo',
-              onPressed: _startNewConversation,
-              icon: const Icon(
-                Icons.edit_square,
-                color: Colors.white,
-                size: 20,
-              ),
-            ),
-          ],
-        ),
-      );
-
-  Widget _pageBody(bool wide) {
-    switch (_page) {
-      case 1:
-        return _commandsView(wide);
-      case 2:
-        return _memoryView();
-      case 3:
-        return _settingsView();
-      case 4:
-        return _imagesGalleryView(wide);
-      default:
-        return _chatView(wide);
-    }
-  }
-
-  Widget _imagesGalleryView(bool wide) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: _title(
-                'Imágenes mandadas',
-                'Aquí quedan guardadas las imágenes que has enviado en tus chats.',
-              ),
-            ),
-            TextButton.icon(
-              onPressed: () => _setPage(0),
-              icon: const Icon(Icons.chat_bubble_outline, size: 18, color: cyan),
-              label: const Text('Volver al chat', style: TextStyle(color: cyan)),
-            ),
-          ],
-        ),
-        Expanded(
-          child: _sentImages.isEmpty
-              ? Center(
-                  child: _glassCard(
-                    padding: const EdgeInsets.all(24),
-                    child: const Column(
-                      mainAxisSize: MainAxisSize.min,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () {
+                    if (inDrawer) Navigator.pop(context);
+                    _openProfileSwitcherModal();
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Row(
                       children: [
-                        Icon(
-                          Icons.photo_library_outlined,
-                          size: 42,
-                          color: cyan,
+                        _buildUserAvatar(
+                          name: displayName,
+                          email: widget.userEmail,
+                          avatarBase64: currentAvatar,
+                          radius: 17,
                         ),
-                        SizedBox(height: 10),
-                        Text(
-                          'Aún no has mandado imágenes',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Cuando envíes una foto o captura desde el chat, aparecerá guardada aquí.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: muted, fontSize: 13),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              : GridView.builder(
-                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: wide ? 230 : 185,
-                    mainAxisExtent: 215,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                  ),
-                  itemCount: _sentImages.length,
-                  itemBuilder: (context, index) {
-                    final img = _sentImages[index];
-                    return _glassCard(
-                      padding: const EdgeInsets.all(8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            child: GestureDetector(
-                              onTap: () => _openImagePreviewDialog(img),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(11),
-                                child: Image.memory(
-                                  base64Decode(img.imageBase64),
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  img.caption.isNotEmpty
-                                      ? img.caption
-                                      : img.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                              Text(
+                                displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
                                 ),
                               ),
-                              InkWell(
-                                onTap: () => _deleteSentImage(img.id),
-                                borderRadius: BorderRadius.circular(8),
-                                child: const Padding(
-                                  padding: EdgeInsets.all(4),
-                                  child: Icon(
-                                    Icons.delete_outline,
-                                    size: 17,
-                                    color: Colors.redAccent,
-                                  ),
+                              Text(
+                                widget.userEmail,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: muted,
+                                  fontSize: 11,
                                 ),
                               ),
                             ],
                           ),
-                          Text(
-                            TimeOfDay.fromDateTime(img.sentAt).format(context),
-                            style: const TextStyle(color: muted, fontSize: 10.5),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
-    );
-  }
-
-  Widget _chatView(bool wide) {
-    if (_messages.isEmpty) {
-      return Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _heroWelcomeTitle,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: wide ? 30 : 23,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                    height: 1.25,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 22),
-                if (_attachments.isNotEmpty) ...[
-                  _attachmentsPreview(),
-                  const SizedBox(height: 8),
-                ],
-                _composer(),
-              ],
-            ),
+              ),
+              IconButton(
+                tooltip: 'Ajustes',
+                onPressed: () {
+                  if (inDrawer) Navigator.pop(context);
+                  _setPage(4);
+                },
+                icon: const Icon(Icons.settings_outlined, color: muted),
+              ),
+            ],
           ),
         ),
-      );
-    }
-
-    return Column(
-      children: [
-        Expanded(
-          child: ListView.builder(
-            controller: _scroll,
-            reverse: false,
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            itemCount: _messages.length,
-            itemBuilder: (context, index) {
-              return _messageBubble(_messages[index]);
-            },
-          ),
-        ),
-        if (_attachments.isNotEmpty) _attachmentsPreview(),
-        const SizedBox(height: 8),
-        _composer(),
       ],
     );
   }
 
-  Widget _attachmentsPreview() {
+  Widget _topBar(bool wide) {
     return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      height: 56,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
-        color: panel,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: blue.withOpacity(0.45)),
+        color: const Color(0xCC04091D),
+        border: Border(bottom: BorderSide(color: blue.withOpacity(0.28))),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (int i = 0; i < _attachments.length; i++) ...[
-              _attachmentThumbnailCard(_attachments[i], i),
-              if (i < _attachments.length - 1) const SizedBox(width: 10),
-            ],
-          ],
-        ),
+      child: Row(
+        children: [
+          if (!wide || !_sidebarOpen)
+            IconButton(
+              tooltip: 'Abrir barra lateral',
+              onPressed: () {
+                if (wide) {
+                  setState(() => _sidebarOpen = true);
+                } else {
+                  _scaffoldKey.currentState?.openDrawer();
+                }
+              },
+              icon: const Icon(Icons.menu, color: Colors.white),
+            ),
+          const Icon(Icons.all_inclusive, color: cyan, size: 22),
+          const SizedBox(width: 8),
+          Text(
+            _assistantName,
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 17,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const Spacer(),
+          IconButton(
+            tooltip: _speakReplies ? 'Silenciar voz' : 'Leer respuestas en voz alta',
+            onPressed: () {
+              setState(() => _speakReplies = !_speakReplies);
+              _save();
+              _toast(
+                _speakReplies
+                    ? 'Lectura en voz alta activada.'
+                    : 'Lectura en voz alta desactivada.',
+              );
+            },
+            icon: Icon(
+              _speakReplies ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+              color: _speakReplies ? cyan : muted,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _attachmentThumbnailCard(PendingAttachment item, int index) {
-    return SizedBox(
-      width: 78,
-      height: 78,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            left: 0,
-            bottom: 0,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0E2247),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: cyan.withOpacity(0.5)),
-                ),
-                child: item.isImage
-                    ? Image.memory(
-                        item.bytes,
-                        width: 72,
-                        height: 72,
-                        fit: BoxFit.cover,
-                      )
-                    : Padding(
-                        padding: const EdgeInsets.all(6),
+  Widget _pageBody(bool wide) {
+    switch (_page) {
+      case 1:
+        return _commandsPage();
+      case 2:
+        return _memoryPage();
+      case 3:
+        return _imagesGalleryPage();
+      case 4:
+        return _settingsPage();
+      case 0:
+      default:
+        return _chatPage(wide);
+    }
+  }
+
+  Widget _chatPage(bool wide) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 920),
+        child: Column(
+          children: [
+            Expanded(
+              child: _messages.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
                         child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             const Icon(
-                              Icons.description_outlined,
+                              Icons.all_inclusive,
+                              size: 54,
                               color: cyan,
-                              size: 24,
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 14),
                             Text(
-                              item.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
+                              _heroWelcomeTitle,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 9.5,
-                                color: Colors.white,
+                              style: TextStyle(
+                                fontSize: wide ? 28 : 22,
+                                fontWeight: FontWeight.w800,
                               ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Investiga documentos, consulta encuestas o noticias en tiempo real, genera archivos o envía notas de voz.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: muted, fontSize: 14),
                             ),
                           ],
                         ),
                       ),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 0,
-            right: 0,
-            child: GestureDetector(
-              onTap: () {
-                setState(() {
-                  _attachments.removeAt(index);
-                });
-              },
-              child: Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF040918),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white70, width: 1.2),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Colors.black54,
-                      blurRadius: 4,
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.only(bottom: 12),
+                      itemCount: _messages.length + (_loading ? 1 : 0),
+                      itemBuilder: (ctx, idx) {
+                        if (_loading && idx == _messages.length) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            child: Row(
+                              children: [
+                                CircleAvatar(
+                                  radius: 16,
+                                  backgroundColor: blue.withOpacity(0.25),
+                                  child: const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: cyan,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                const Text(
+                                  'isaias titan está investigando...',
+                                  style: TextStyle(color: muted, fontSize: 13.5),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                        return _messageBubble(_messages[idx]);
+                      },
                     ),
-                  ],
+            ),
+            if (_attachments.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xE60A1838),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: blue.withOpacity(0.45)),
                 ),
-                child: const Icon(
-                  Icons.close,
-                  size: 14,
-                  color: Colors.white,
+                child: SizedBox(
+                  height: 54,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _attachments.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (ctx, i) {
+                      final att = _attachments[i];
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10244D),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              att.isImage
+                                  ? Icons.image_outlined
+                                  : Icons.description_outlined,
+                              color: cyan,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 6),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 150),
+                              child: Text(
+                                att.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12.5),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            InkWell(
+                              onTap: () =>
+                                  setState(() => _attachments.removeAt(i)),
+                              child: const Icon(
+                                Icons.close,
+                                size: 16,
+                                color: muted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
-            ),
-          ),
-        ],
+            _composerBar(),
+          ],
+        ),
       ),
     );
   }
 
   Widget _messageBubble(ChatItem item) {
-    final images = item.allImagesBase64;
-    final names = item.allImageNames;
-    final docs = item.documentNames;
+    final isUser = item.user;
+    final imgs = item.allImagesBase64;
+    final cleanText = _sanitizeNoBlueLinks(item.text);
 
-    final bubble = Container(
-      margin: const EdgeInsets.symmetric(vertical: 5),
-      padding: const EdgeInsets.all(12),
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * .72,
-      ),
-      decoration: BoxDecoration(
-        color: item.user ? const Color(0xE80A3571) : panel,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(
-          color: item.user ? blue.withOpacity(.8) : blue.withOpacity(.45),
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.all(14),
+        constraints: const BoxConstraints(maxWidth: 740),
+        decoration: BoxDecoration(
+          color: isUser
+              ? const Color(0xFF16438C)
+              : const Color(0xE6081533),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isUser
+                ? cyan.withOpacity(0.45)
+                : blue.withOpacity(0.4),
+          ),
         ),
-        boxShadow: [
-          BoxShadow(color: blue.withOpacity(.10), blurRadius: 15),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (item.isVoice)
-            WhatsAppVoiceBubble(
-              durationSeconds: item.voiceDurationSeconds,
-              audioBase64: item.audioBase64,
-            ),
-          if (docs.isNotEmpty) ...[
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                for (final docName in docs)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 7,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (item.documentNames.isNotEmpty) ...[
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: item.documentNames
+                    .map(
+                      (docName) => Chip(
+                        avatar: const Icon(
+                          Icons.picture_as_pdf_outlined,
+                          size: 16,
+                          color: cyan,
+                        ),
+                        label: Text(
+                          docName,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        backgroundColor: const Color(0xFF0E2045),
+                      ),
+                    )
+                    .toList(),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (imgs.isNotEmpty) ...[
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: imgs.map((b64) {
+                  return ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      base64Decode(b64),
+                      width: 240,
+                      fit: BoxFit.cover,
                     ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0E2554),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: cyan.withOpacity(0.55)),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (item.isVoice)
+              WhatsAppVoiceBubble(
+                durationSeconds: item.voiceDurationSeconds,
+                audioBase64: item.audioBase64,
+              )
+            else if (cleanText.isNotEmpty)
+              isUser
+                  ? SelectableText(
+                      cleanText,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        height: 1.42,
+                      ),
+                    )
+                  : MarkdownBody(
+                      data: cleanText,
+                      selectable: true,
+                      styleSheet: _cleanMarkdownStyle(context, fontSize: 15),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+            if (item.generatedImages.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              for (final genImg in item.generatedImages) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.memory(
+                    base64Decode(genImg.base64Data),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  genImg.caption,
+                  style: const TextStyle(
+                    color: muted,
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
+            ],
+            if (item.generatedFile != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0D2147),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: cyan.withOpacity(0.45)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
                         const Icon(
-                          Icons.description_rounded,
+                          Icons.insert_drive_file_outlined,
                           color: cyan,
-                          size: 18,
+                          size: 20,
                         ),
-                        const SizedBox(width: 7),
-                        Flexible(
+                        const SizedBox(width: 8),
+                        Expanded(
                           child: Text(
-                            docName,
+                            item.generatedFile!.filename,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13.5,
                             ),
                           ),
                         ),
                       ],
                     ),
-                  ),
-              ],
-            ),
-            if (item.text.isNotEmpty || images.isNotEmpty)
-              const SizedBox(height: 8),
-          ],
-          if (images.isNotEmpty) ...[
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () => _openDocumentPreviewDialog(
+                            item.generatedFile!,
+                            item.filePreview ?? cleanText,
+                            item.generatedImages,
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: BorderSide(color: cyan.withOpacity(0.65)),
+                          ),
+                          icon: const Icon(Icons.visibility_outlined, size: 17),
+                          label: const Text('Vista previa'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () =>
+                              _downloadGeneratedFile(item.generatedFile!),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: blue,
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.download_rounded, size: 17),
+                          label: const Text('Descargar'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                for (int i = 0; i < images.length; i++)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.memory(
-                      base64Decode(images[i]),
-                      height: images.length == 1 ? 160 : 110,
-                      width: images.length == 1 ? null : 110,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-              ],
-            ),
-            if (item.text.isNotEmpty) const SizedBox(height: 6),
-          ] else if (names.isNotEmpty) ...[
-            Text(
-              '📄 ${names.join(', ')}',
-              style: const TextStyle(color: cyan, fontSize: 12),
-            ),
-            const SizedBox(height: 5),
-          ],
-          if (item.text.isNotEmpty && !item.isVoice)
-            item.user
-                ? SelectableText(item.text)
-                : MarkdownBody(
-                    data: item.text,
-                    selectable: true,
-                    styleSheet: MarkdownStyleSheet.fromTheme(
-                      Theme.of(context),
-                    ).copyWith(
-                      p: const TextStyle(color: Colors.white, height: 1.45),
-                      strong: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                      ),
-                      h1: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w800,
-                      ),
-                      h2: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
-                      ),
-                      h3: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                      ),
-                      a: const TextStyle(
-                        color: cyan,
-                        decoration: TextDecoration.underline,
-                      ),
-                      listBullet: const TextStyle(color: Colors.white),
-                    ),
-                  ),
-          if (item.generatedFile != null &&
-              item.generatedFile!.base64Data.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0D234D),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: cyan.withOpacity(0.6)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.file_present_rounded,
-                    color: cyan,
-                    size: 22,
-                  ),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Text(
-                      item.generatedFile!.filename,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  FilledButton.icon(
-                    onPressed: () =>
-                        _downloadGeneratedFile(item.generatedFile!),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: blue,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                    ),
-                    icon: const Icon(Icons.download_rounded, size: 17),
-                    label: const Text(
-                      'Descargar',
-                      style: TextStyle(fontSize: 12.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 6),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${item.user ? 'Tú' : _assistantName} · '
-                '${TimeOfDay.fromDateTime(item.time).format(context)}',
-                style: const TextStyle(color: muted, fontSize: 10),
-              ),
-              if (item.text.isNotEmpty && !item.isVoice) ...[
-                const SizedBox(width: 8),
-                InkWell(
-                  onTap: () => _copyMessageText(item.text),
-                  borderRadius: BorderRadius.circular(6),
-                  child: const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    child: Row(
+                Text(
+                  '${isUser ? "Tú" : _assistantName} · '
+                  '${TimeOfDay.fromDateTime(item.time).format(context)}',
+                  style: const TextStyle(color: muted, fontSize: 11),
+                ),
+                if (cleanText.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: () => _copyMessageText(cleanText),
+                    child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.copy, size: 12, color: muted),
+                        Icon(Icons.copy_rounded, size: 13, color: muted),
                         SizedBox(width: 3),
                         Text(
                           'Copiar',
-                          style: TextStyle(color: muted, fontSize: 10),
+                          style: TextStyle(color: muted, fontSize: 11),
                         ),
                       ],
                     ),
                   ),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
-
-    if (item.user) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: bubble,
-      );
-    }
-
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            margin: const EdgeInsets.only(right: 8, bottom: 8),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: cyan, width: 2),
-              boxShadow: [
-                BoxShadow(color: cyan.withOpacity(.35), blurRadius: 10),
+                ],
               ],
             ),
-            child: ClipOval(
-              child: Image.asset(
-                'assets/images/goku.jpg',
-                fit: BoxFit.cover,
-                alignment: const Alignment(0, -.25),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _composerBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xF0081430),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: blue.withOpacity(0.55)),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Adjuntar documentos o fotos',
+            onPressed: (_loading || _recording) ? null : _openAttachMenu,
+            icon: const Icon(Icons.add_rounded, color: cyan, size: 26),
+          ),
+          Expanded(
+            child: _recording
+                ? Text(
+                    'Grabando nota de voz... ${_formatDuration(_recordingSeconds)}',
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  )
+                : TextField(
+                    controller: _input,
+                    focusNode: _inputFocus,
+                    minLines: 1,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _handleSendOrStop(),
+                    decoration: InputDecoration(
+                      hintText: 'Preguntar a $_assistantName',
+                      hintStyle: const TextStyle(color: muted),
+                      border: InputBorder.none,
+                    ),
+                  ),
+          ),
+          IconButton(
+            tooltip: _recording ? 'Detener y enviar audio' : 'Nota de voz',
+            onPressed: _loading ? null : _toggleRecording,
+            icon: Icon(
+              _recording ? Icons.stop_circle_rounded : Icons.mic_none_rounded,
+              color: _recording ? Colors.redAccent : cyan,
+              size: 25,
+            ),
+          ),
+          const SizedBox(width: 4),
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: _loading ? Colors.redAccent : blue,
+            child: IconButton(
+              tooltip: _loading ? 'Detener' : 'Enviar',
+              onPressed: _recording ? null : _handleSendOrStop,
+              icon: Icon(
+                _loading ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                color: Colors.white,
+                size: 20,
               ),
             ),
           ),
-          Flexible(child: bubble),
         ],
       ),
     );
   }
 
-  Widget _composer() => Container(
-        margin: const EdgeInsets.symmetric(horizontal: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(
-          color: const Color(0xF208122B),
-          borderRadius: BorderRadius.circular(32),
-          border: Border.all(color: blue.withOpacity(.45)),
-          boxShadow: [
-            BoxShadow(color: blue.withOpacity(.12), blurRadius: 18),
-          ],
-        ),
-        child: Row(
+  Widget _commandsPage() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: ListView(
           children: [
-            IconButton(
-              tooltip: 'Subir archivos, Fotos y Cámara',
-              onPressed: (_loading || _recording) ? null : _openAttachMenu,
-              icon: const Icon(Icons.add_rounded, color: muted, size: 25),
-              visualDensity: VisualDensity.compact,
+            const Text(
+              'Comandos rápidos',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            Expanded(
-              child: TextField(
-                controller: _input,
-                focusNode: _inputFocus,
-                minLines: 1,
-                maxLines: 4,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _handleSendOrStop(),
-                decoration: InputDecoration(
-                  border: InputBorder.none,
-                  hintText: 'Preguntar a $_assistantName',
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+            const SizedBox(height: 12),
+            for (final cmd in _commands)
+              Card(
+                color: panel,
+                margin: const EdgeInsets.only(bottom: 10),
+                child: ListTile(
+                  leading: Text(cmd.icon, style: const TextStyle(fontSize: 24)),
+                  title: Text(
+                    '${cmd.title} (${cmd.command})',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    cmd.description,
+                    style: const TextStyle(color: muted),
+                  ),
+                  onTap: () {
+                    _input.text = '${cmd.command} ';
+                    _setPage(0);
+                  },
                 ),
               ),
-            ),
-            IconButton(
-              tooltip: _recording
-                  ? 'Terminar y enviar nota de voz'
-                  : 'Grabar nota de voz',
-              onPressed: _loading ? null : _toggleRecording,
-              icon: Icon(
-                _recording ? Icons.stop_circle : Icons.mic_none_rounded,
-                color: _recording ? Colors.redAccent : muted,
-                size: 23,
-              ),
-              visualDensity: VisualDensity.compact,
-            ),
-            const SizedBox(width: 3),
-            SizedBox(
-              width: 40,
-              height: 40,
-              child: IconButton.filled(
-                tooltip: _loading ? 'Detener' : 'Enviar mensaje',
-                onPressed: _recording ? null : _handleSendOrStop,
-                style: IconButton.styleFrom(
-                  backgroundColor: _loading ? Colors.redAccent : blue,
-                  foregroundColor: Colors.white,
-                ),
-                icon: Icon(
-                  _loading ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                  size: 22,
-                ),
-              ),
-            ),
           ],
         ),
-      );
+      ),
+    );
+  }
 
-  Widget _commandsView(bool wide) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _title(
-            'Comandos',
-            'Atajos que puedes usar también desde el chat.',
-          ),
-          Expanded(
-            child: GridView.builder(
-              gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: wide ? 290 : 420,
-                mainAxisExtent: 160,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-              ),
-              itemCount: _commands.length,
-              itemBuilder: (context, index) {
-                final command = _commands[index];
-
-                return _glassCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${command.icon}  ${command.title}',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Expanded(
-                        child: Text(
-                          command.description,
-                          style: const TextStyle(
-                            color: muted,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: FilledButton.tonal(
-                          onPressed: () {
-                            _setPage(0);
-
-                            if (command.command == '/recordar') {
-                              _input.text = '/recordar ';
-                            } else {
-                              _input.text = command.command;
-                              _sendText();
-                            }
-                          },
-                          child: const Text('Probar'),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
+  Widget _memoryPage() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Memoria guardada',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-          ),
-        ],
-      );
-
-  Widget _memoryView() => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _title(
-            'Memoria',
-            'Notas guardadas en este dispositivo.',
-          ),
-          _glassCard(
-            child: Row(
+            const SizedBox(height: 12),
+            Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _memoryInput,
-                    onSubmitted: (_) => _saveMemory(),
                     decoration: const InputDecoration(
-                      hintText: 'Añade algo para recordar…',
-                      border: InputBorder.none,
+                      hintText: 'Escribe una nota para recordar...',
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 FilledButton(
                   onPressed: _saveMemory,
                   child: const Text('Guardar'),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: _memories.isEmpty
-                ? const Center(
-                    child: Text(
-                      'Todavía no has guardado ninguna nota.',
-                      style: TextStyle(color: muted),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: _memories.length,
-                    itemBuilder: (context, index) => _glassCard(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: SelectableText(_memories[index]),
-                          ),
-                          IconButton(
-                            tooltip: 'Eliminar nota',
-                            onPressed: () async {
-                              setState(() => _memories.removeAt(index));
-                              await _save();
-                            },
+            const SizedBox(height: 16),
+            Expanded(
+              child: _memories.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No hay notas guardadas todavía.',
+                        style: TextStyle(color: muted),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: _memories.length,
+                      itemBuilder: (ctx, i) => Card(
+                        color: panel,
+                        child: ListTile(
+                          title: Text(_memories[i]),
+                          trailing: IconButton(
                             icon: const Icon(
                               Icons.delete_outline,
-                              color: Colors.pinkAccent,
+                              color: Colors.redAccent,
+                            ),
+                            onPressed: () async {
+                              setState(() => _memories.removeAt(i));
+                              await _save();
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _imagesGalleryPage() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 920),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Galería de imágenes',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: _sentImages.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'Aún no has enviado ni guardado imágenes.',
+                        style: TextStyle(color: muted),
+                      ),
+                    )
+                  : GridView.builder(
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 210,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                      ),
+                      itemCount: _sentImages.length,
+                      itemBuilder: (ctx, i) {
+                        final img = _sentImages[i];
+                        return GestureDetector(
+                          onTap: () => _openImagePreviewDialog(img),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: Image.memory(
+                              base64Decode(img.imageBase64),
+                              fit: BoxFit.cover,
                             ),
                           ),
-                        ],
-                      ),
+                        );
+                      },
                     ),
-                  ),
-          ),
-        ],
-      );
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-  Widget _settingsView() => ListView(
-        children: [
-          _title('Ajustes', 'Personaliza tu asistente y tu cuenta.'),
-          _glassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Cuenta activa',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Nombre: ${widget.userName}',
-                  style: const TextStyle(color: muted),
-                ),
-                Text(
-                  'Correo: ${widget.userEmail}',
-                  style: const TextStyle(color: muted),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  alignment: WrapAlignment.end,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _openEditProfileDialog,
-                      icon: const Icon(Icons.edit, color: cyan, size: 18),
-                      label: const Text('Editar perfil'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _openProfileSwitcherModal,
-                      icon: const Icon(
-                        Icons.switch_account,
-                        color: cyan,
-                        size: 18,
-                      ),
-                      label: const Text('Cambiar cuenta'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: widget.onLogoutAll,
-                      icon: const Icon(
-                        Icons.logout,
-                        color: Colors.amberAccent,
-                        size: 18,
-                      ),
-                      label: const Text('Cerrar sesión'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _glassCard(
-            child: Column(
-              children: [
-                TextField(
-                  controller: _nameInput,
-                  maxLength: 24,
-                  decoration: const InputDecoration(
-                    labelText: 'Nombre del asistente',
-                    prefixIcon: Icon(Icons.auto_awesome),
-                    counterText: '',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _speakReplies,
-                  onChanged: (value) async {
-                    setState(() => _speakReplies = value);
-                    await _save();
-                  },
-                  title: const Text('Leer respuestas en voz alta'),
-                  subtitle: const Text(
-                    'Usa la voz disponible en tu dispositivo.',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: FilledButton.icon(
-                    onPressed: _saveSettings,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('Guardar ajustes'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _glassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Conexión',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                const Text(
-                  'isaias titan se conecta automáticamente a su servicio seguro. '
-                  'No necesitas ingresar URL ni claves aquí.',
-                  style: TextStyle(color: muted, height: 1.4),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          _glassCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Datos locales',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                const Text(
-                  'Tus conversaciones recientes, imágenes enviadas y memoria se guardan en este dispositivo. '
-                  'Las imágenes y el audio se envían al servidor para que la IA los analice.',
-                  style: TextStyle(color: muted, height: 1.4),
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: OutlinedButton.icon(
-                    onPressed: _eraseAll,
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('Borrar datos locales'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-
-  Widget _title(String title, String subtitle) => Padding(
-        padding: const EdgeInsets.only(bottom: 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _settingsPage() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: ListView(
           children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 25,
-                fontWeight: FontWeight.w800,
+            const Text(
+              'Ajustes de isaias titan',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _nameInput,
+              decoration: const InputDecoration(
+                labelText: 'Nombre del asistente',
               ),
             ),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: const TextStyle(color: muted),
+            const SizedBox(height: 14),
+            SwitchListTile(
+              title: const Text('Leer respuestas en voz alta'),
+              value: _speakReplies,
+              onChanged: (v) {
+                setState(() => _speakReplies = v);
+                _save();
+              },
+            ),
+            const SizedBox(height: 14),
+            FilledButton(
+              onPressed: _saveSettings,
+              child: const Text('Guardar cambios'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _eraseAll,
+              icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+              label: const Text(
+                'Borrar historial y datos locales',
+                style: TextStyle(color: Colors.redAccent),
+              ),
             ),
           ],
         ),
-      );
-
-  Widget _glassCard({
-    required Widget child,
-    EdgeInsetsGeometry padding = const EdgeInsets.all(14),
-    EdgeInsetsGeometry? margin,
-  }) =>
-      Container(
-        width: double.infinity,
-        margin: margin,
-        padding: padding,
-        decoration: BoxDecoration(
-          color: panel,
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: blue.withOpacity(.48)),
-          boxShadow: [
-            BoxShadow(color: blue.withOpacity(.08), blurRadius: 18),
-          ],
-        ),
-        child: child,
-      );
+      ),
+    );
+  }
 }
